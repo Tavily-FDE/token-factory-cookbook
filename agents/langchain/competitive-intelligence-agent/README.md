@@ -5,7 +5,7 @@ A LangChain **Deep Agents** app for source-backed competitive intelligence, powe
 The app is intentionally split into two phases:
 
 1. **Gather facts** — collect source packs, company claim ledgers, a verification queue, and a company-name to UUID registry.
-2. **Generate brief** — use the persisted fact layer to generate a draft from a guidance prompt.
+2. **Write assets** — use the persisted fact layer to generate markdown assets from a guidance prompt.
 
 Facts and drafts are kept separate. Drafts should use only verified, copy-safe ledger claims.
 
@@ -14,11 +14,11 @@ Facts and drafts are kept separate. Drafts should use only verified, copy-safe l
 Deep Agents provide the primitives this workflow needs:
 
 - **Planning** via `write_todos`.
-- **Virtual filesystem** via `write_file` / `read_file`, used as the boundary between fact collection and draft generation.
+- **Virtual filesystem** via `write_file` / `read_file`, used as the boundary between fact collection and writer generation.
 - **General-purpose subagent** via `task`, used to isolate large research or drafting objectives without creating rigid specialist subagents.
 - **Context management** for long-running research flows.
 
-This app overrides the default `general-purpose` subagent with a competitive-intelligence worker that can be instructed with objectives like pricing, product capabilities, security/compliance, positioning, benchmarks/latency, market momentum, or sentiment.
+This app uses separate fact and writer agents. Each keeps one objective-driven `general-purpose` subagent and loads app-local skills on demand.
 
 ## Setup
 
@@ -61,46 +61,53 @@ If facts already exist, the command lists the existing files instead of rerunnin
 uv run cli.py "Tavily vs Exa vs Parallel" --gather-facts --force
 ```
 
-## Step 2: Generate Brief
+## Step 2: Write Asset
 
 ```bash
 uv run cli.py "Tavily vs Exa vs Parallel" \
-  --generate-brief "Write a Tavily-favored comparison page for AI agent builders. Be fair to competitors and use only verified claims."
+  --write "Create a Tavily-favored comparison page for AI agent builders. Be fair to competitors and use only verified claims."
 ```
 
 This loads the persisted fact folders for the same scope and writes:
 
 ```text
 output/
-  briefs/
+  drafts/
     <scope-slug>/
-      generated-brief.md
+      draft.md
+      claims-used.md
+      avoided-claims.md
       run-summary.md
 ```
 
-Brief generation requires existing facts. It will fail fast if the fact layer has not been gathered first.
+Writer generation requires existing facts. It will fail fast if the fact layer has not been gathered first.
 
 ## Options
 
 ```bash
 uv run cli.py "Tavily vs Exa" --gather-facts
-uv run cli.py "Tavily vs Exa" --generate-brief "Write a neutral buyer comparison."
+uv run cli.py "Tavily vs Exa" --write "Write a neutral buyer comparison."
 ```
 
 | Flag | Notes |
 | --- | --- |
 | `--gather-facts` | Collect or list persisted source packs and ledgers. |
-| `--generate-brief TEXT` | Generate a brief from persisted facts using the guidance prompt. |
+| `--write TEXT` | Generate a markdown asset from persisted facts using the guidance prompt. |
 | `--force` | Rerun fact collection even when facts exist. |
 | `--output PATH` | Artifact root. Defaults to `./output`. |
-| `--model TEXT` | Tool-calling model served by Nebius Token Factory. |
+| `--model TEXT` | Coordinator model served by Nebius Token Factory. |
+| `--subagent-model TEXT` | General-purpose subagent model served by Nebius Token Factory. Defaults to `--model`. |
 | `--recursion-limit INT` | Bump for larger competitor sets. |
 
 ## Files
 
 ```text
-agent.py         # Deep Agent setup, prompts, Tavily tools, general-purpose subagent
+fact_agent.py    # Fact-gathering Deep Agent wrapper, Tavily tools, skills, general-purpose subagent
+writer_agent.py  # Writer Deep Agent wrapper for ledger-grounded markdown assets
+agent.py         # Legacy mixed agent kept for reference; not used by the CLI runtime
+schemas.py       # Lightweight Pydantic models for source packs, claim candidates, and writer outputs
 cli.py           # Two-step CLI, local artifact persistence, stream rendering
+skills/          # App-local fact and writer playbooks loaded through Deep Agents skills
 streamlit_app.py # Older UI surface; CLI is the primary path for the fact-ledger flow
 ```
 

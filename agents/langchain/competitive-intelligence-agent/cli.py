@@ -3,7 +3,7 @@
 Two explicit steps:
 
     uv run cli.py "Tavily vs Exa vs Parallel" --gather-facts
-    uv run cli.py "Tavily vs Exa" --generate-brief "Write a Tavily-favored comparison page"
+    uv run cli.py "Tavily vs Exa" --write "Write a Tavily-favored comparison page"
 
 Facts are persisted under the output directory by scope. Brief generation reads
 those persisted facts and should not rediscover the web unless the user asks for
@@ -18,23 +18,31 @@ import re
 import shutil
 import sys
 import uuid
+from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Iterable
 
 import typer
+import yaml
+from deepagents.backends import CompositeBackend, FilesystemBackend
+from deepagents.middleware.filesystem import FilesystemPermission
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, ToolMessage
+from pydantic import ValidationError
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.text import Text
 
-from agent import build_agent
+from fact_agent import build_fact_agent
+from schemas import ClaimCandidate
+from writer_agent import build_writer_agent
 
 _TODO_TOOL = "write_todos"
 _TASK_TOOL = "task"
 _WRITE_FILE_TOOL = "write_file"
+_SKILLS_ROOT = Path(__file__).parent / "skills"
 
 _STATUS_ICON = {"pending": "○", "in_progress": "◐", "completed": "●"}
 _STATUS_STYLE = {"pending": "dim", "in_progress": "yellow", "completed": "green"}
@@ -44,6 +52,13 @@ COMPANY_FACT_FILES = (
     "sources.md",
     "facts.yaml",
     "verification-queue.md",
+    "run-summary.md",
+)
+
+WRITER_FILES = (
+    "draft.md",
+    "claims-used.md",
+    "avoided-claims.md",
     "run-summary.md",
 )
 
@@ -184,7 +199,7 @@ def render_stream(console: Console, events: Iterable[Any]) -> dict[str, Any]:
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
-    help="Build competitor fact ledgers or generate briefs from existing ledgers.",
+    help="Build competitor fact ledgers or write markdown assets from existing ledgers.",
 )
 
 
@@ -220,64 +235,6 @@ def _safe_output_parts(virtual_path: str) -> list[str]:
     if any(part == ".." for part in parts):
         raise ValueError(f"Unsafe virtual path: {virtual_path}")
     return parts
-
-
-def _mapped_output_path(
-    root: Path,
-    virtual_path: str,
-    *,
-    mode: str,
-    scope_slug: str,
-    scope_registry: dict[str, str],
-) -> Path:
-    parts = _safe_output_parts(virtual_path)
-    if not parts:
-        raise ValueError(f"Unsafe virtual path: {virtual_path}")
-
-    if parts == ["companies.json"]:
-        return root / "companies.json"
-
-    if parts[0] == "companies" and len(parts) >= 2 and parts[1] in set(scope_registry.values()):
-        return root.joinpath(*parts)
-
-    if mode == "brief" and parts[0] == "briefs":
-        return root.joinpath(*parts)
-
-    raise ValueError(
-        "Unexpected virtual output path "
-        f"{virtual_path!r}. Write fact artifacts under /companies/<uuid>/ "
-        "and brief artifacts under /briefs/<scope>/."
-    )
-
-
-def _persist_virtual_files(
-    root: Path,
-    files: dict[str, object],
-    *,
-    mode: str,
-    scope_slug: str,
-    scope_registry: dict[str, str],
-) -> list[Path]:
-    written: list[Path] = []
-    for virtual_path, entry in sorted(files.items()):
-        content = _file_content(entry)
-        if content is None:
-            continue
-        if not virtual_path.startswith("/"):
-            virtual_path = "/" + virtual_path
-        if virtual_path.startswith("/large_tool_results/"):
-            continue
-        output_path = _mapped_output_path(
-            root,
-            virtual_path,
-            mode=mode,
-            scope_slug=scope_slug,
-            scope_registry=scope_registry,
-        )
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(content, encoding="utf-8")
-        written.append(output_path)
-    return written
 
 
 def _load_company_registry(output_dir: Path) -> dict[str, str]:
@@ -322,9 +279,26 @@ def _merge_company_registry(output_dir: Path, scope: str) -> tuple[dict[str, str
     return _registry_for_scope(scope, registry), path
 
 
-def _registry_file_data(registry: dict[str, str]) -> dict[str, dict[str, str]]:
-    content = json.dumps(registry, indent=2) + "\n"
-    return {"/companies.json": {"content": content, "encoding": "utf-8"}}
+def _company_scaffold(name: str, company_id: str, scope: str) -> dict[str, Any]:
+    return {
+        "uuid": company_id,
+        "name": name,
+        "scope": scope,
+        "research_status": "initialized",
+        "date_researched": date.today().isoformat(),
+    }
+
+
+def _write_company_scaffolds(output_dir: Path, scope: str, scope_registry: dict[str, str]) -> list[Path]:
+    written: list[Path] = []
+    for name, company_id in scope_registry.items():
+        path = output_dir / "companies" / company_id / "company.json"
+        if path.exists():
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(_company_scaffold(name, company_id, scope), indent=2) + "\n", encoding="utf-8")
+        written.append(path)
+    return written
 
 
 def _company_dirs(output_dir: Path, scope_registry: dict[str, str]) -> list[Path]:
@@ -358,12 +332,67 @@ def _missing_company_fact_files(output_dir: Path, scope_registry: dict[str, str]
     return missing
 
 
+def _missing_writer_files(output_dir: Path, scope_slug: str) -> list[Path]:
+    draft_dir = output_dir / "drafts" / scope_slug
+    return [draft_dir / name for name in WRITER_FILES if not (draft_dir / name).is_file()]
+
+
+def _writer_files(output_dir: Path, scope_slug: str) -> list[Path]:
+    draft_dir = output_dir / "drafts" / scope_slug
+    return sorted(draft_dir / name for name in WRITER_FILES if (draft_dir / name).is_file())
+
+
 def _load_fact_files(output_dir: Path, scope_registry: dict[str, str]) -> dict[str, dict[str, str]]:
     loaded: dict[str, dict[str, str]] = {}
     for path in _fact_files(output_dir, scope_registry):
         rel = path.relative_to(output_dir).as_posix()
         loaded["/" + rel] = {"content": path.read_text(encoding="utf-8"), "encoding": "utf-8"}
     return loaded
+
+
+def _validate_fact_virtual_files(
+    files: dict[str, object],
+    scope_registry: dict[str, str],
+) -> list[str]:
+    warnings: list[str] = []
+    allowed_company_ids = set(scope_registry.values())
+
+    for virtual_path, entry in sorted(files.items()):
+        content = _file_content(entry)
+        if content is None:
+            continue
+        if not virtual_path.startswith("/"):
+            virtual_path = "/" + virtual_path
+
+        parts = _safe_output_parts(virtual_path)
+        if (
+            len(parts) == 3
+            and parts[0] == "companies"
+            and parts[1] in allowed_company_ids
+            and parts[2] == "facts.yaml"
+        ):
+            try:
+                parsed = yaml.safe_load(content) or []
+            except yaml.YAMLError as exc:
+                warnings.append(f"{virtual_path}: invalid YAML ({exc})")
+                continue
+
+            if not isinstance(parsed, list):
+                warnings.append(f"{virtual_path}: expected a list of claim records")
+                continue
+
+            for index, item in enumerate(parsed, start=1):
+                if not isinstance(item, dict):
+                    warnings.append(f"{virtual_path}: claim {index} is not a mapping")
+                    continue
+                try:
+                    ClaimCandidate.model_validate(item)
+                except ValidationError as exc:
+                    first_error = exc.errors()[0]
+                    field = ".".join(str(part) for part in first_error.get("loc", ())) or "record"
+                    warnings.append(f"{virtual_path}: claim {index} invalid at {field}: {first_error.get('msg')}")
+
+    return warnings
 
 
 def _print_existing_facts(console: Console, output_dir: Path, scope_registry: dict[str, str]) -> None:
@@ -390,19 +419,56 @@ def _company_folder_instructions(scope_registry: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _build_backend(output_dir: Path) -> CompositeBackend:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return CompositeBackend(
+        default=FilesystemBackend(root_dir=output_dir.resolve(), virtual_mode=True),
+        routes={
+            "/skills/": FilesystemBackend(root_dir=_SKILLS_ROOT.resolve(), virtual_mode=True),
+        },
+    )
+
+
+def _filesystem_permissions() -> list[FilesystemPermission]:
+    return [
+        FilesystemPermission(["read"], ["/", "/companies.json", "/companies", "/companies/**", "/drafts", "/drafts/**"]),
+        FilesystemPermission(["read"], ["/skills", "/skills/**"]),
+        FilesystemPermission(["read", "write"], ["/large_tool_results", "/large_tool_results/**"]),
+        FilesystemPermission(["write"], ["/companies", "/companies/**", "/drafts", "/drafts/**"]),
+        FilesystemPermission(["write"], ["/companies.json", "/skills", "/skills/**"], mode="deny"),
+        FilesystemPermission(["read", "write"], ["/**"], mode="deny"),
+    ]
+
+
 def _run_agent(
     *,
     console: Console,
     mode: str,
     model: str,
+    subagent_model: str | None,
     recursion_limit: int,
     user_request: str,
-    initial_files: dict[str, dict[str, str]] | None = None,
+    output_dir: Path,
 ) -> dict[str, Any]:
-    agent = build_agent(model_name=model, mode=mode)  # type: ignore[arg-type]
+    backend = _build_backend(output_dir)
+    permissions = _filesystem_permissions()
+    if mode == "facts":
+        agent = build_fact_agent(
+            model_name=model,
+            subagent_model_name=subagent_model,
+            backend=backend,
+            permissions=permissions,
+        )
+    elif mode == "write":
+        agent = build_writer_agent(
+            model_name=model,
+            subagent_model_name=subagent_model,
+            backend=backend,
+            permissions=permissions,
+        )
+    else:
+        raise ValueError(f"Unknown agent mode: {mode}")
     input_state: dict[str, Any] = {"messages": [{"role": "user", "content": user_request}]}
-    if initial_files:
-        input_state["files"] = initial_files
 
     stream = agent.stream(
         input_state,
@@ -423,9 +489,9 @@ def main(
         bool,
         typer.Option("--gather-facts", help="Collect or list persisted fact ledgers for this scope."),
     ] = False,
-    generate_brief: Annotated[
+    write: Annotated[
         str | None,
-        typer.Option("--generate-brief", help="Generate a brief from persisted facts using this guidance prompt."),
+        typer.Option("--write", help="Write a markdown asset from persisted facts using this guidance prompt."),
     ] = None,
     force: Annotated[
         bool,
@@ -433,8 +499,15 @@ def main(
     ] = False,
     model: Annotated[
         str,
-        typer.Option("--model", "-m", help="Any tool-calling capable model served by Nebius Token Factory."),
+        typer.Option("--model", "-m", help="Coordinator model served by Nebius Token Factory."),
     ] = "moonshotai/Kimi-K2.5",
+    subagent_model: Annotated[
+        str | None,
+        typer.Option(
+            "--subagent-model",
+            help="General-purpose subagent model served by Nebius Token Factory. Defaults to --model.",
+        ),
+    ] = None,
     output: Annotated[
         Path,
         typer.Option("--output", "-o", help="Directory for persisted fact and draft artifacts."),
@@ -444,16 +517,16 @@ def main(
         typer.Option(help="LangGraph recursion limit. Bump for larger scopes."),
     ] = 180,
 ) -> None:
-    """Run exactly one phase: gather facts or generate a brief."""
+    """Run exactly one phase: gather facts or write from existing facts."""
     load_dotenv()
     console = Console()
 
-    if gather_facts == bool(generate_brief):
+    if gather_facts == bool(write):
         console.print(
             Panel(
                 "Choose exactly one mode:\n\n"
                 "[cyan]--gather-facts[/]\n"
-                "[cyan]--generate-brief \"<guidance prompt>\"[/]",
+                "[cyan]--write \"<guidance prompt>\"[/]",
                 title="mode required",
                 border_style="red",
             )
@@ -476,6 +549,8 @@ def main(
                 if company_dir.exists():
                     shutil.rmtree(company_dir)
 
+        scaffold_paths = _write_company_scaffolds(output, scope, scope_registry)
+
         console.print(
             Panel(
                 f"[bold]Scope:[/] {scope}\n"
@@ -494,34 +569,49 @@ def main(
             f"EXPLICIT COMPANIES TO RESEARCH: {', '.join(_candidate_company_names(scope))}\n"
             f"{_company_folder_instructions(scope_registry)}\n\n"
             "Do not discover or research additional competitors unless the scope explicitly asks for competitor discovery.\n\n"
+            "The CLI has already written /companies.json and minimal company.json scaffolds for the listed companies. "
+            "Update company.json only if research finds useful identity details. "
             "Build persisted source packs, claim ledgers, a verification queue, and a run summary. "
+            "Persistence means calling write_file for every required virtual artifact; text returned in chat is not saved. "
             "Do not generate a marketing brief. Write company artifacts only under the UUID folders listed above: "
-            "company.json, sources.md, facts.yaml, verification-queue.md, and run-summary.md. "
-            "Keep /companies.json at the root as the global name-to-UUID registry. "
-            "Do not stop after writing company.json; the run is incomplete until every listed company folder has all five files."
+            "sources.md, facts.yaml, verification-queue.md, and run-summary.md. "
+            "Do not rewrite /companies.json. "
+            "Do not stop after research, company.json, or sources.md; the run is incomplete until every listed company folder "
+            "has company.json plus research-authored sources.md, facts.yaml, verification-queue.md, and run-summary.md. "
+            "After sources.md exists, delegate a final general-purpose artifact-finalization task for each company. "
+            "That task must read company.json, sources.md, claim-ledger-builder, and claim-safety-review, then write "
+            "facts.yaml, verification-queue.md, and run-summary.md with write_file. "
+            "If evidence is incomplete, write the research files anyway and move gaps to "
+            "verification-queue.md."
         )
         try:
             final = _run_agent(
                 console=console,
                 mode="facts",
                 model=model,
+                subagent_model=subagent_model,
                 recursion_limit=recursion_limit,
                 user_request=user_request,
-                initial_files=_registry_file_data(_load_company_registry(output)),
+                output_dir=output,
             )
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted.[/]")
             sys.exit(130)
 
-        written = _persist_virtual_files(
-            output,
-            final["files"],
-            mode="facts",
-            scope_slug=scope_slug,
-            scope_registry=scope_registry,
-        )
-        if registry_path not in written:
-            written.append(registry_path)
+        validation_warnings = _validate_fact_virtual_files(_load_fact_files(output, scope_registry), scope_registry)
+        if validation_warnings:
+            console.print(
+                Panel(
+                    "\n".join(validation_warnings),
+                    title="fact validation warnings",
+                    border_style="yellow",
+                )
+            )
+
+        written = _fact_files(output, scope_registry)
+        for path in scaffold_paths:
+            if path not in written:
+                written.append(path)
         console.print(Rule("artifacts", style="dim"))
         if not written:
             console.print(
@@ -539,55 +629,14 @@ def main(
             console.print(
                 Panel(
                     "\n".join(str(path) for path in missing),
-                    title="completing missing fact artifacts",
-                    border_style="yellow",
-                )
-            )
-            completion_request = (
-                "MODE: gather facts completion pass.\n"
-                f"SCOPE: {scope}\n\n"
-                f"{_company_folder_instructions(scope_registry)}\n\n"
-                "The broad research pass already created some company files. "
-                "Read the existing /companies.json registry and each relevant /companies/<uuid>/ folder. "
-                "Write only the missing required company artifacts listed below. "
-                "Use existing sources.md first; use Tavily extract/search only when a needed fact is not present in the existing files. "
-                "Do not write old root-level /sources, /ledgers, /verification-queue.md, or /run-summary.md paths.\n\n"
-                "MISSING FILES:\n"
-                + "\n".join(f"- /{path.relative_to(output).as_posix()}" for path in missing)
-            )
-            completion = _run_agent(
-                console=console,
-                mode="facts",
-                model=model,
-                recursion_limit=recursion_limit,
-                user_request=completion_request,
-                initial_files=_load_fact_files(output, scope_registry),
-            )
-            completion_written = _persist_virtual_files(
-                output,
-                completion["files"],
-                mode="facts",
-                scope_slug=scope_slug,
-                scope_registry=scope_registry,
-            )
-            for path in completion_written:
-                if path not in written:
-                    written.append(path)
-                    console.print(f"[green]✓[/] {path}")
-            missing = _missing_company_fact_files(output, scope_registry)
-
-        if missing:
-            console.print(
-                Panel(
-                    "\n".join(str(path) for path in missing),
-                    title="missing required fact artifacts",
+                    title="agent did not write required fact artifacts",
                     border_style="red",
                 )
             )
             raise typer.Exit(code=2)
         return
 
-    assert generate_brief is not None
+    assert write is not None
     scope_registry = _registry_for_scope(scope, _load_company_registry(output))
     if not _facts_exist(output, scope_registry):
         console.print(
@@ -604,50 +653,67 @@ def main(
     console.print(
         Panel(
             f"[bold]Scope:[/] {scope}\n"
-            f"[bold]Mode:[/] generate brief\n"
+            f"[bold]Mode:[/] write from facts\n"
             f"[bold]Facts:[/] {len(fact_files)} files loaded from {output}\n"
-            f"[bold]Guidance:[/] {_short(generate_brief, 180)}",
-            title="brief generation from facts",
+            f"[bold]Guidance:[/] {_short(write, 180)}",
+            title="writer generation from facts",
             border_style="cyan",
         )
     )
     console.print(Rule("live agent activity", style="dim"))
 
     user_request = (
-        "MODE: generate brief from existing fact files only.\n"
+        "MODE: write markdown asset from existing fact files only.\n"
         f"SCOPE: {scope}\n"
-        f"BRIEF OUTPUT FOLDER: /briefs/{scope_slug}\n"
-        f"GUIDANCE PROMPT: {generate_brief}\n\n"
+        f"WRITER OUTPUT FOLDER: /drafts/{scope_slug}\n"
+        f"GUIDANCE PROMPT: {write}\n\n"
         "Read the existing /companies.json registry and relevant /companies/<uuid>/ fact folders. "
-        "Generate the requested draft from verified, copy-safe facts only. "
-        f"Write /briefs/{scope_slug}/generated-brief.md and /briefs/{scope_slug}/run-summary.md."
+        "Generate the requested markdown asset from verified, copy-safe facts only. "
+        "Do not browse or perform fresh verification; if new verification is needed, note that the fact layer must be refreshed. "
+        f"Write /drafts/{scope_slug}/draft.md, /drafts/{scope_slug}/claims-used.md, "
+        f"/drafts/{scope_slug}/avoided-claims.md, and /drafts/{scope_slug}/run-summary.md."
     )
 
     try:
         final = _run_agent(
             console=console,
-            mode="brief",
+            mode="write",
             model=model,
+            subagent_model=subagent_model,
             recursion_limit=recursion_limit,
             user_request=user_request,
-            initial_files=fact_files,
+            output_dir=output,
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted.[/]")
         sys.exit(130)
 
-    written = _persist_virtual_files(
-        output,
-        final["files"],
-        mode="brief",
-        scope_slug=scope_slug,
-        scope_registry=scope_registry,
-    )
+    written = _writer_files(output, scope_slug)
     console.print(Rule("artifacts", style="dim"))
+    if not written:
+        console.print(
+            Panel(
+                f"No draft files were written by the agent. Virtual files seen: {list(final['files'].keys()) or '(none)'}",
+                title="no draft artifacts produced",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=2)
     for path in written:
         console.print(f"[green]✓[/] {path}")
 
-    draft = output / "briefs" / scope_slug / "generated-brief.md"
+    missing = _missing_writer_files(output, scope_slug)
+    if missing:
+        console.print(
+            Panel(
+                "\n".join(str(path) for path in missing),
+                title="missing required writer artifacts",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=2)
+
+    draft = output / "drafts" / scope_slug / "draft.md"
     if draft.exists():
         console.print(Rule("draft", style="dim"))
         console.print(Markdown(draft.read_text(encoding="utf-8")))
