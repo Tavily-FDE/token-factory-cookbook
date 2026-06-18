@@ -1,27 +1,26 @@
-# Competitive Intelligence Agent
+# Competitive Intelligence Fact Ledger
 
-A LangChain **Deep Agent** that produces decision-grade competitive briefs, powered by an LLM served by [Nebius Token Factory](https://tokenfactory.nebius.com/), and real-time web research via [Tavily](https://tavily.com/).
+A LangChain **Deep Agents** app for source-backed competitive intelligence, powered by an LLM served by [Nebius Token Factory](https://tokenfactory.nebius.com/) and web research via [Tavily](https://tavily.com/).
 
-You give it a single company name. It picks the top competitors itself, researches each across **pricing**, **recent activity**, and **sentiment**, and synthesizes a strategic brief.
+The app is intentionally split into two phases:
 
-## Why deep agents
+1. **Gather facts** — collect source packs, company claim ledgers, a verification queue, and a company-name to UUID registry.
+2. **Generate brief** — use the persisted fact layer to generate a draft from a guidance prompt.
 
-A regular tool-calling agent gets shallow on a task like this — it does one search, hallucinates the rest. Deep Agents add three primitives that make multi-step research actually work:
+Facts and drafts are kept separate. Drafts should use only verified, copy-safe ledger claims.
 
-- **Planning** — a `write_todos` tool the agent uses to lay out work before it starts, and tick off as it goes.
-- **A virtual filesystem** — `write_file` / `read_file` so the agent can accumulate findings and produce a single clean final artifact.
-- **Sub-agents** — bounded specialist agents the lead can delegate to. We ship three:
-  - `pricing-researcher` — finds and extracts the official pricing page.
-  - `news-researcher` — surfaces launches, funding, and exec moves from the
-    last 30–90 days (uses Tavily's `topic="news"` + `time_range`).
-  - `sentiment-researcher` — gauges developer/customer sentiment from HN,
-    Reddit, G2, and Capterra (uses Tavily's `include_domains`).
+## Why Deep Agents
 
-All sub-agents share two tools: `tavily_search` (LLM-optimized web search) and `tavily_extract` (clean-markdown page fetch). Everything else — planning, files, delegation — is provided by Deep Agents out of the box.
+Deep Agents provide the primitives this workflow needs:
+
+- **Planning** via `write_todos`.
+- **Virtual filesystem** via `write_file` / `read_file`, used as the boundary between fact collection and draft generation.
+- **General-purpose subagent** via `task`, used to isolate large research or drafting objectives without creating rigid specialist subagents.
+- **Context management** for long-running research flows.
+
+This app overrides the default `general-purpose` subagent with a competitive-intelligence worker that can be instructed with objectives like pricing, product capabilities, security/compliance, positioning, benchmarks/latency, market momentum, or sentiment.
 
 ## Setup
-
-This project uses [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cd agents/langchain/competitive-intelligence-agent
@@ -32,76 +31,84 @@ cp env.example .env
 Then edit `.env`:
 
 ```bash
-# https://tokenfactory.nebius.com/
 NEBIUS_API_KEY=your-nebius-api-key
-
-# https://tavily.com/
 TAVILY_API_KEY=your-tavily-api-key
 ```
 
-## Run
-
-### CLI
+## Step 1: Gather Facts
 
 ```bash
-uv run cli.py "Netflix"
+uv run cli.py "Tavily vs Exa vs Parallel vs You.com vs Brave" --gather-facts
 ```
 
-### Streamlit (web UI)
+This writes a global company registry and one fact folder per company:
+
+```text
+output/
+  companies.json
+  companies/
+    <company-uuid>/
+      company.json
+      sources.md
+      facts.yaml
+      verification-queue.md
+      run-summary.md
+```
+
+If facts already exist, the command lists the existing files instead of rerunning research. Use `--force` to rebuild:
 
 ```bash
-uv run streamlit run streamlit_app.py
+uv run cli.py "Tavily vs Exa vs Parallel" --gather-facts --force
 ```
 
-Opens a browser with a branded activity feed: enter a company in the sidebar, click **Generate Brief**, and watch the agent plan, dispatch sub-agents, and stream results live. The final brief renders as markdown with a download button.
-
-That's it. The agent will:
-
-1. Identify Netflix's top direct competitors.
-2. Lay out a TODO plan covering all dimensions.
-3. Dispatch sub-agents in parallel for each company.
-4. Synthesize the results into `brief.md` and save it to disk
-   (`./brief-netflix.md` by default).
-
-You'll see every step rendered live in the terminal: plan updates, tool calls, sub-agent dispatches, and the final brief.
-
-### Options
+## Step 2: Generate Brief
 
 ```bash
-uv run cli.py "Linear" \
-  --model "moonshotai/Kimi-K2.5" \
-  --output ./linear-brief.md
+uv run cli.py "Tavily vs Exa vs Parallel" \
+  --generate-brief "Write a Tavily-favored comparison page for AI agent builders. Be fair to competitors and use only verified claims."
 ```
 
-| Flag                 | Default                  | Notes                                         |
-| -------------------- | ------------------------ | --------------------------------------------- |
-| `--model`, `-m`      | `moonshotai/Kimi-K2.5`   | Any tool-calling capable Nebius TF model.     |
-| `--output`, `-o`     | `./brief-<company>.md`   | Where to save the final markdown brief.       |
-| `--recursion-limit`  | `150`                    | Bump if the agent runs out of LangGraph steps.|
+This loads the persisted fact folders for the same scope and writes:
 
-## What the output looks like
+```text
+output/
+  briefs/
+    <scope-slug>/
+      generated-brief.md
+      run-summary.md
+```
 
-The brief is structured for action, not entertainment:
+Brief generation requires existing facts. It will fail fast if the fact layer has not been gathered first.
 
-- **TL;DR** — 3-5 bullets on where the target wins/loses.
-- **Side-by-side table** — pricing, free tier, momentum, sentiment per company.
-- **Per-company detail** — pricing / recent moves / sentiment paragraphs with inline source URLs.
-- **Strategic implications** — opinionated bullets on what the target should do about it.
-- **Sources** — every URL the sub-agents cited, grouped by company.
+## Options
+
+```bash
+uv run cli.py "Tavily vs Exa" --gather-facts
+uv run cli.py "Tavily vs Exa" --generate-brief "Write a neutral buyer comparison."
+```
+
+| Flag | Notes |
+| --- | --- |
+| `--gather-facts` | Collect or list persisted source packs and ledgers. |
+| `--generate-brief TEXT` | Generate a brief from persisted facts using the guidance prompt. |
+| `--force` | Rerun fact collection even when facts exist. |
+| `--output PATH` | Artifact root. Defaults to `./output`. |
+| `--model TEXT` | Tool-calling model served by Nebius Token Factory. |
+| `--recursion-limit INT` | Bump for larger competitor sets. |
 
 ## Files
 
+```text
+agent.py         # Deep Agent setup, prompts, Tavily tools, general-purpose subagent
+cli.py           # Two-step CLI, local artifact persistence, stream rendering
+streamlit_app.py # Older UI surface; CLI is the primary path for the fact-ledger flow
 ```
-agent.py         # Lead agent + 3 sub-agent specs + the brief-schema prompt
-cli.py           # Typer entry point + Rich live renderer + output handling
-streamlit_app.py # Streamlit web UI with live activity feed + brief viewer
-```
-
-Two files. The Deep Agents SDK does the heavy lifting — we just compose model, two tools, three sub-agent prompts, and a brief structure.
 
 ## References
 
 - LangChain Deep Agents — <https://docs.langchain.com/oss/python/deepagents/overview>
+- Deep Agents subagents — <https://docs.langchain.com/oss/python/deepagents/subagents>
+- Deep Agents filesystem — <https://docs.langchain.com/oss/python/deepagents/filesystem>
 - LangChain Tavily — <https://docs.langchain.com/oss/python/integrations/tools/tavily_search>
 - LangChain Nebius provider — <https://docs.langchain.com/oss/python/integrations/providers/nebius>
 - Nebius Token Factory — <https://tokenfactory.nebius.com/>
