@@ -21,6 +21,7 @@ ClaimCategory = Literal[
 ]
 
 SourceType = Literal[
+    "official_homepage",
     "official_pricing",
     "official_docs",
     "official_blog",

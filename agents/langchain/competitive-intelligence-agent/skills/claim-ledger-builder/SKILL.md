@@ -41,7 +41,7 @@ atomic: one fact, one best source, one status.
   approved_wording: "<copy-safe wording or empty string>"
   source_url: "<url>"
   source_title: "<page title>"
-  source_type: official_pricing|official_docs|official_blog|official_changelog|official_security|official_benchmark|public_repo|review_site|community_discussion|news|analyst|secondary
+  source_type: official_homepage|official_pricing|official_docs|official_blog|official_changelog|official_security|official_benchmark|public_repo|review_site|community_discussion|news|analyst|secondary
   date_checked: "<YYYY-MM-DD>"
   observed_value: {}
   scope: "<plan/product/endpoint/control/event/audience context>"

@@ -82,23 +82,14 @@ Workflow:
    source strategy, output contract, and "do not write marketing copy".
 6. Ensure `/companies/<company_uuid>/sources.md` exists and contains enough
    source-pack detail for later ledger creation.
-7. For each company, dispatch one final bounded `general-purpose` task whose
-   only objective is artifact finalization. Give that subagent all required
-   details in the task description:
-   - company name and UUID folder
-   - exact files to read: `company.json`, `sources.md`,
-     `/skills/claim-ledger-builder/SKILL.md`, and
-     `/skills/claim-safety-review/SKILL.md`
-   - exact files to write with `write_file`: `facts.yaml`,
-     `verification-queue.md`, and `run-summary.md`
-   - instruction to split compound claims, dedupe, attach `company_id`, prefer
-     primary evidence, and move weak or risky claims into the verification queue
-   - instruction not to browse unless `sources.md` lacks a source URL needed
-     for a required claim or queue item
-   - instruction not to write marketing copy
-   - instruction not to return artifact content only in the final response
-8. After the finalization task returns, verify the required company files exist
-   before your final response.
+7. After `sources.md` exists, the lead coordinator owns final artifact creation.
+   Do not rely on a subagent as the only writer of final artifacts. The lead
+   coordinator must read `company.json`, `sources.md`,
+   `/skills/claim-ledger-builder/SKILL.md`, and
+   `/skills/claim-safety-review/SKILL.md`, then call `write_file` for:
+   `facts.yaml`, `verification-queue.md`, and `run-summary.md`.
+8. Verify the required company files exist before your final response. If any
+   required file is missing, write it yourself before replying.
 
 Default fact objectives per company:
 - source_pack: read `source-pack-builder`
@@ -107,8 +98,9 @@ Default fact objectives per company:
 - security_compliance: read `security-compliance-research` and `claim-safety-review`
 - benchmarks_latency: read `benchmark-evidence-review` and `claim-safety-review`
 - market_momentum_sentiment: read `sentiment-market-scan`
-- artifact_finalization: read `claim-ledger-builder` and `claim-safety-review`;
-  write `facts.yaml`, `verification-queue.md`, and `run-summary.md`
+- artifact_finalization: lead coordinator reads `claim-ledger-builder` and
+  `claim-safety-review`; writes `facts.yaml`, `verification-queue.md`, and
+  `run-summary.md`
 
 Artifact contract:
 - `/companies.json` is owned by the runtime. Read it; do not rewrite it.
@@ -130,6 +122,8 @@ Persistence contract:
 - Prefer complete source coverage, but if further research is blocked or budget
   is running low, stop researching and write the required artifacts from the
   best available evidence.
+- The run is incomplete if only `sources.md` exists. The lead coordinator must
+  create the ledger, verification queue, and run summary before final response.
 
 Do not write company facts to root-level `/sources`, `/ledgers`,
 `/verification-queue.md`, or `/run-summary.md`. Use only UUID folders listed in

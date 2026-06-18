@@ -419,6 +419,30 @@ def _company_folder_instructions(scope_registry: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _repair_fact_artifacts_request(scope: str, scope_registry: dict[str, str], missing: list[Path], output: Path) -> str:
+    missing_virtual = []
+    for path in missing:
+        try:
+            missing_virtual.append("/" + path.relative_to(output).as_posix())
+        except ValueError:
+            missing_virtual.append(str(path))
+
+    return (
+        "MODE: repair missing fact artifacts only.\n"
+        f"SCOPE: {scope}\n\n"
+        f"{_company_folder_instructions(scope_registry)}\n\n"
+        "Do not browse, crawl, search, extract, or use task. Use only filesystem reads and writes.\n"
+        "For each listed company folder, read company.json, sources.md if it exists, "
+        "/skills/claim-ledger-builder/SKILL.md, and /skills/claim-safety-review/SKILL.md.\n"
+        "Write every missing required artifact now with write_file. Missing files:\n"
+        + "\n".join(f"- {path}" for path in missing_virtual)
+        + "\n\n"
+        "If sources.md has enough evidence, create a compact facts.yaml with atomic claim records. "
+        "If evidence is too thin, write facts.yaml as an empty YAML list (`[]`) and put the gaps in "
+        "verification-queue.md. Always write run-summary.md. Do not end with only a status note."
+    )
+
+
 def _build_backend(output_dir: Path) -> CompositeBackend:
     output_dir.mkdir(parents=True, exist_ok=True)
     return CompositeBackend(
@@ -578,9 +602,9 @@ def main(
             "Do not rewrite /companies.json. "
             "Do not stop after research, company.json, or sources.md; the run is incomplete until every listed company folder "
             "has company.json plus research-authored sources.md, facts.yaml, verification-queue.md, and run-summary.md. "
-            "After sources.md exists, delegate a final general-purpose artifact-finalization task for each company. "
-            "That task must read company.json, sources.md, claim-ledger-builder, and claim-safety-review, then write "
-            "facts.yaml, verification-queue.md, and run-summary.md with write_file. "
+            "After sources.md exists, the lead coordinator must read company.json, sources.md, claim-ledger-builder, "
+            "and claim-safety-review, then write facts.yaml, verification-queue.md, and run-summary.md with write_file. "
+            "Do not rely on a subagent as the only writer of final artifacts. "
             "If evidence is incomplete, write the research files anyway and move gaps to "
             "verification-queue.md."
         )
@@ -597,6 +621,29 @@ def main(
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted.[/]")
             sys.exit(130)
+
+        missing = _missing_company_fact_files(output, scope_registry)
+        if missing:
+            console.print(
+                Panel(
+                    "\n".join(str(path) for path in missing),
+                    title="repairing missing fact artifacts",
+                    border_style="yellow",
+                )
+            )
+            try:
+                final = _run_agent(
+                    console=console,
+                    mode="facts",
+                    model=model,
+                    subagent_model=subagent_model,
+                    recursion_limit=min(recursion_limit, 80),
+                    user_request=_repair_fact_artifacts_request(scope, scope_registry, missing, output),
+                    output_dir=output,
+                )
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Interrupted.[/]")
+                sys.exit(130)
 
         validation_warnings = _validate_fact_virtual_files(_load_fact_files(output, scope_registry), scope_registry)
         if validation_warnings:

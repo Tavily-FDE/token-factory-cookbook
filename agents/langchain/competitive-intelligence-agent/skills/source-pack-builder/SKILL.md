@@ -30,10 +30,10 @@ claims; they describe what each source can support.
 
 ## Source Types
 
-Use: `official_pricing`, `official_docs`, `official_blog`,
-`official_changelog`, `official_security`, `official_benchmark`,
-`public_repo`, `review_site`, `community_discussion`, `news`, `analyst`,
-`secondary`.
+Use: `official_homepage`, `official_pricing`, `official_docs`,
+`official_blog`, `official_changelog`, `official_security`,
+`official_benchmark`, `public_repo`, `review_site`, `community_discussion`,
+`news`, `analyst`, `secondary`.
 
 ## Output
 
