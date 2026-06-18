@@ -431,15 +431,17 @@ def _repair_fact_artifacts_request(scope: str, scope_registry: dict[str, str], m
         "MODE: repair missing fact artifacts only.\n"
         f"SCOPE: {scope}\n\n"
         f"{_company_folder_instructions(scope_registry)}\n\n"
-        "Do not browse, crawl, search, extract, or use task. Use only filesystem reads and writes.\n"
         "For each listed company folder, read company.json, sources.md if it exists, "
         "/skills/claim-ledger-builder/SKILL.md, and /skills/claim-safety-review/SKILL.md.\n"
+        "Your next actions after reading must be write_file calls for every missing artifact. "
+        "Do not explain, summarize, plan, or finish until the write_file calls have completed. "
         "Write every missing required artifact now with write_file. Missing files:\n"
         + "\n".join(f"- {path}" for path in missing_virtual)
         + "\n\n"
         "If sources.md has enough evidence, create a compact facts.yaml with atomic claim records. "
         "If evidence is too thin, write facts.yaml as an empty YAML list (`[]`) and put the gaps in "
-        "verification-queue.md. Always write run-summary.md. Do not end with only a status note."
+        "verification-queue.md. Always write run-summary.md. Do not end with only a status note. "
+        "A repair run is successful only if the missing file paths listed above now exist."
     )
 
 
@@ -524,14 +526,14 @@ def main(
     model: Annotated[
         str,
         typer.Option("--model", "-m", help="Coordinator model served by Nebius Token Factory."),
-    ] = "moonshotai/Kimi-K2.5",
+    ] = "moonshotai/Kimi-K2.6",
     subagent_model: Annotated[
         str | None,
         typer.Option(
             "--subagent-model",
             help="General-purpose subagent model served by Nebius Token Factory. Defaults to --model.",
         ),
-    ] = None,
+    ] = "moonshotai/Kimi-K2.5",
     output: Annotated[
         Path,
         typer.Option("--output", "-o", help="Directory for persisted fact and draft artifacts."),
@@ -580,7 +582,9 @@ def main(
                 f"[bold]Scope:[/] {scope}\n"
                 f"[bold]Mode:[/] gather facts\n"
                 f"[bold]Output root:[/] {output}\n"
-                f"[bold]Registry:[/] {registry_path}",
+                f"[bold]Registry:[/] {registry_path}\n"
+                f"[bold]Coordinator Model:[/] {model}\n"
+                f"[bold]Subagent Model:[/] {subagent_model}",
                 title="source-backed fact collection",
                 border_style="cyan",
             )

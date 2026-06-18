@@ -41,6 +41,15 @@ Rules:
 - Pricing, security/compliance, benchmark, latency, and superlative claims are
   high risk unless directly supported by primary evidence.
 - Sentiment claims are usually `copy_safe: false`.
+- Separate source-backed from true. A company page can support that the company
+  states something, but benchmarks, latency, uptime, customer counts,
+  compliance posture, funding/valuation, and superlatives remain vendor claims
+  unless independently supported.
+- For each claim candidate, classify evidence posture as `direct_fact`,
+  `vendor_claim`, `third_party_report`, or `inference`, and source fit as
+  `exact`, `partial`, `context`, or `lead_only`.
+- Only `source_fit: exact` can be recommended as `status: verified`. If source
+  fit is weaker, narrow the claim or mark it `needs_review`.
 
 Tool guidance:
 - Use `tavily_search` for discovery, recent information, official pages, news,
@@ -77,7 +86,7 @@ Workflow:
    category, buyer/use case, product surface, and the research lanes that matter.
 4. Use `write_todos` to plan company identity, source discovery, objective
    research, ledger normalization, verification queues, and run summaries.
-5. For each company, dispatch bounded research `general-purpose` tasks. Each
+5. [MANDATORY] For each company, dispatch bounded research `general-purpose` tasks. Each
    task must specify: one objective, company name, UUID folder, skills to read,
    source strategy, output contract, and "do not write marketing copy".
 6. Ensure `/companies/<company_uuid>/sources.md` exists and contains enough
@@ -134,16 +143,37 @@ Facts ledger:
   records.
 - Each record must include: `id`, `company_id`, `company`, `category`, `claim`,
   `source_url`, `source_title`, `source_type`, `date_checked`,
-  `observed_value`, `confidence`, `status`, `copy_safe`, `risk_level`, and
-  `notes`.
+  `observed_value`, `evidence_posture`, `source_fit`, `confidence`, `status`,
+  `copy_safe`, `risk_level`, and `notes`.
 - Use `claim-ledger-builder` for the full schema, examples, normalization
   rules, and verification handling.
 - Every claim needs a source URL and date checked.
 - Weak, stale, conflicting, or unsupported items belong in
   `verification-queue.md`, not as verified claims.
 
-When finished, reply only with a concise list of files written after the
-required `write_file` calls have succeeded.
+
+Evidence calibration:
+  - `evidence_posture`: `direct_fact` for exact source-of-record facts,
+    `vendor_claim` for company-authored claims that are not independently
+    proven, `third_party_report` for press/analyst/investor/database claims,
+    and `inference` for derived conclusions.
+  - `source_fit`: `exact` when the source explicitly states the narrow claim,
+    `partial` when it supports only part of the claim, `context` when it only
+    helps explain the area, and `lead_only` when it is useful for discovery but
+    not acceptable as evidence.
+  - `status: verified` requires `source_fit: exact`. Otherwise narrow the claim
+    or mark it `needs_review`.
+  - `confidence: high` requires a current, exact source of record with no known
+    conflict. Use `medium` for self-reported high-risk claims or credible
+    secondary reports, and `low` for weak, sparse, unclear, or inferred claims.
+  - `copy_safe: true` means the approved wording is safe for downstream reuse
+    without overstating the evidence; it does not merely mean the claim has a
+    URL.
+  - For vendor-authored benchmarks, latency, uptime, customer counts,
+    compliance posture, funding/valuation, and superlatives, prefer attributed
+    approved wording such as "Company reports..." or "According to...".
+
+
 """
 
 
@@ -180,8 +210,8 @@ def _fact_tools():
 
 
 def build_fact_agent(
-    model_name: str = "zai-org/GLM-5.2",
-    subagent_model_name: str | None = "nvidia/nemotron-3-super-120b-a12b",
+    model_name: str = None,
+    subagent_model_name: str | None = None,
     backend: BackendProtocol | None = None,
     permissions: list[FilesystemPermission] | None = None,
 ):

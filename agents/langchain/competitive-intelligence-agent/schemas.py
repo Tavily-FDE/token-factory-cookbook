@@ -39,6 +39,8 @@ SourceType = Literal[
 ClaimStatus = Literal["verified", "needs_review", "stale", "conflicting", "rejected"]
 Confidence = Literal["high", "medium", "low"]
 RiskLevel = Literal["low", "medium", "high"]
+EvidencePosture = Literal["direct_fact", "vendor_claim", "third_party_report", "inference"]
+SourceFit = Literal["exact", "partial", "context", "lead_only"]
 
 
 class SourcePackEntry(BaseModel):
@@ -69,6 +71,8 @@ class ClaimCandidate(BaseModel):
     source_type: SourceType
     date_checked: str = Field(min_length=1)
     observed_value: dict[str, Any] = Field(default_factory=dict)
+    evidence_posture: EvidencePosture = "direct_fact"
+    source_fit: SourceFit = "exact"
     scope: str = ""
     confidence: Confidence
     freshness_days: int = Field(ge=1)

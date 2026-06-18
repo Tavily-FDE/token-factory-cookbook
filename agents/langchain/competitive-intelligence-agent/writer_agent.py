@@ -98,7 +98,7 @@ When finished, reply only with a concise list of files written.
 
 
 def build_writer_agent(
-    model_name: str = "moonshotai/Kimi-K2.6",
+    model_name: str = None,
     subagent_model_name: str | None = None,
     backend: BackendProtocol | None = None,
     permissions: list[FilesystemPermission] | None = None,
