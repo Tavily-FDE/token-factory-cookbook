@@ -36,8 +36,12 @@ from rich.rule import Rule
 from rich.text import Text
 
 from fact_agent import build_fact_agent
+from model_factory import model_provider
 from schemas import ClaimCandidate
 from writer_agent import build_writer_agent
+
+DEFAULT_COORDINATOR_MODEL = "moonshotai/Kimi-K2.6"
+DEFAULT_SUBAGENT_MODEL = "openai:gpt-5.5"
 
 _TODO_TOOL = "write_todos"
 _TASK_TOOL = "task"
@@ -53,6 +57,15 @@ COMPANY_FACT_FILES = (
     "facts.yaml",
     "verification-queue.md",
     "run-summary.md",
+)
+
+COMPANY_RESEARCH_FILES = (
+    "source_pack.md",
+    "pricing.md",
+    "product_capabilities.md",
+    "security_compliance.md",
+    "benchmarks_latency.md",
+    "market_momentum_sentiment.md",
 )
 
 WRITER_FILES = (
@@ -203,8 +216,19 @@ app = typer.Typer(
 )
 
 
-def _check_env(console: Console) -> None:
-    missing = [k for k in ("NEBIUS_API_KEY", "TAVILY_API_KEY") if not os.getenv(k)]
+def _check_env(console: Console, *, mode: str, model: str, subagent_model: str | None) -> None:
+    required = set()
+    if mode == "facts":
+        required.add("TAVILY_API_KEY")
+
+    for model_spec in (model, subagent_model or model):
+        provider = model_provider(model_spec)
+        if provider == "nebius":
+            required.add("NEBIUS_API_KEY")
+        elif provider == "openai":
+            required.add("OPENAI_API_KEY")
+
+    missing = sorted(k for k in required if not os.getenv(k))
     if missing:
         console.print(
             Panel(
@@ -315,6 +339,11 @@ def _fact_files(output_dir: Path, scope_registry: dict[str, str]) -> list[Path]:
             path = company_dir / name
             if path.is_file():
                 paths.append(path)
+        research_dir = company_dir / "research"
+        for name in COMPANY_RESEARCH_FILES:
+            path = research_dir / name
+            if path.is_file():
+                paths.append(path)
     return sorted(set(paths))
 
 
@@ -327,6 +356,10 @@ def _missing_company_fact_files(output_dir: Path, scope_registry: dict[str, str]
     for company_dir in _company_dirs(output_dir, scope_registry):
         for name in COMPANY_FACT_FILES:
             path = company_dir / name
+            if not path.is_file():
+                missing.append(path)
+        for name in COMPANY_RESEARCH_FILES:
+            path = company_dir / "research" / name
             if not path.is_file():
                 missing.append(path)
     return missing
@@ -431,13 +464,17 @@ def _repair_fact_artifacts_request(scope: str, scope_registry: dict[str, str], m
         "MODE: repair missing fact artifacts only.\n"
         f"SCOPE: {scope}\n\n"
         f"{_company_folder_instructions(scope_registry)}\n\n"
-        "For each listed company folder, read company.json, sources.md if it exists, "
+        "Do not browse, crawl, search, extract, or use task. Use only filesystem reads and writes.\n"
+        "For each listed company folder, read company.json, sources.md if it exists, any existing "
+        "research lane artifacts under /companies/<company_uuid>/research/, "
         "/skills/claim-ledger-builder/SKILL.md, and /skills/claim-safety-review/SKILL.md.\n"
         "Your next actions after reading must be write_file calls for every missing artifact. "
         "Do not explain, summarize, plan, or finish until the write_file calls have completed. "
         "Write every missing required artifact now with write_file. Missing files:\n"
         + "\n".join(f"- {path}" for path in missing_virtual)
         + "\n\n"
+        "If a missing path is a research lane artifact, write a compact lane note from existing sources.md "
+        "or write a placeholder explaining that the lane was not produced and should be rerun. "
         "If sources.md has enough evidence, create a compact facts.yaml with atomic claim records. "
         "If evidence is too thin, write facts.yaml as an empty YAML list (`[]`) and put the gaps in "
         "verification-queue.md. Always write run-summary.md. Do not end with only a status note. "
@@ -525,15 +562,22 @@ def main(
     ] = False,
     model: Annotated[
         str,
-        typer.Option("--model", "-m", help="Coordinator model served by Nebius Token Factory."),
-    ] = "moonshotai/Kimi-K2.6",
+        typer.Option(
+            "--model",
+            "-m",
+            help="Coordinator model spec. Use openai:<model> or nebius:<model>; bare names use Nebius.",
+        ),
+    ] = DEFAULT_COORDINATOR_MODEL,
     subagent_model: Annotated[
         str | None,
         typer.Option(
             "--subagent-model",
-            help="General-purpose subagent model served by Nebius Token Factory. Defaults to --model.",
+            help=(
+                "General-purpose subagent model spec. Use openai:<model> or nebius:<model>. "
+                f"Defaults to {DEFAULT_SUBAGENT_MODEL}."
+            ),
         ),
-    ] = "moonshotai/Kimi-K2.5",
+    ] = DEFAULT_SUBAGENT_MODEL,
     output: Annotated[
         Path,
         typer.Option("--output", "-o", help="Directory for persisted fact and draft artifacts."),
@@ -559,7 +603,8 @@ def main(
         )
         raise typer.Exit(code=2)
 
-    _check_env(console)
+    mode = "facts" if gather_facts else "write"
+    _check_env(console, mode=mode, model=model, subagent_model=subagent_model)
 
     scope_slug = _slugify(scope)
 
@@ -567,8 +612,17 @@ def main(
         scope_registry, registry_path = _merge_company_registry(output, scope)
 
         if _facts_exist(output, scope_registry) and not force:
-            _print_existing_facts(console, output, scope_registry)
-            return
+            existing_missing = _missing_company_fact_files(output, scope_registry)
+            if not existing_missing:
+                _print_existing_facts(console, output, scope_registry)
+                return
+            console.print(
+                Panel(
+                    "\n".join(str(path) for path in existing_missing),
+                    title="existing facts incomplete; continuing fact collection",
+                    border_style="yellow",
+                )
+            )
 
         if force:
             for company_dir in _company_dirs(output, scope_registry):
@@ -601,8 +655,16 @@ def main(
             "Update company.json only if research finds useful identity details. "
             "Build persisted source packs, claim ledgers, a verification queue, and a run summary. "
             "Persistence means calling write_file for every required virtual artifact; text returned in chat is not saved. "
+            "For each listed company, dispatch general-purpose subagents for the fact objectives in bounded parallel batches. "
+            "For a company, issue one task per fact objective in the same coordinator turn when possible, then wait for the "
+            "batch to return before synthesis. Require each subagent to write its findings under "
+            "/companies/<company_uuid>/research/ using these deterministic filenames: "
+            "source_pack.md, pricing.md, product_capabilities.md, security_compliance.md, benchmarks_latency.md, "
+            "and market_momentum_sentiment.md. No two parallel tasks may write the same file. "
+            "The lead coordinator must read these research files before writing "
+            "sources.md or facts.yaml. "
             "Do not generate a marketing brief. Write company artifacts only under the UUID folders listed above: "
-            "sources.md, facts.yaml, verification-queue.md, and run-summary.md. "
+            "research/*.md, sources.md, facts.yaml, verification-queue.md, and run-summary.md. "
             "Do not rewrite /companies.json. "
             "Do not stop after research, company.json, or sources.md; the run is incomplete until every listed company folder "
             "has company.json plus research-authored sources.md, facts.yaml, verification-queue.md, and run-summary.md. "

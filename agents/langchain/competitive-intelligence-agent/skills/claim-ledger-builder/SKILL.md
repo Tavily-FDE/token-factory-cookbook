@@ -76,6 +76,9 @@ the claim:
 - `evidence_posture: inference` for derived conclusions assembled from multiple
   facts.
 
+Do not use evidence posture values as `source_type`; `source_type` must remain
+one of the allowed source taxonomy values listed in the schema.
+
 Classify source fit:
 
 - `exact`: the source explicitly states the narrow claim.

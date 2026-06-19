@@ -92,6 +92,7 @@ class ResearchTaskResult(BaseModel):
     source_pack: list[SourcePackEntry] = Field(default_factory=list)
     claim_candidates: list[ClaimCandidate] = Field(default_factory=list)
     evidence_gaps: list[str] = Field(default_factory=list)
+    artifact_paths: list[str] = Field(default_factory=list)
     notes: str = ""
 
 

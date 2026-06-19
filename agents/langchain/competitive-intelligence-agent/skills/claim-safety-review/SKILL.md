@@ -30,6 +30,9 @@ agents.
   analyst, investor, review, or database reporting.
 - `evidence_posture: inference` means the claim is derived from multiple facts.
 
+Do not use evidence posture values as `source_type`; `source_type` must remain
+one of the allowed source taxonomy values.
+
 - `source_fit: exact` means the source explicitly states the narrow claim.
 - `source_fit: partial` means the source supports only part of the claim.
 - `source_fit: context` means the source explains the area but does not prove the

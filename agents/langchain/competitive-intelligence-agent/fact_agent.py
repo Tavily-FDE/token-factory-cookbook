@@ -7,9 +7,9 @@ import time
 from deepagents import SubAgent, create_deep_agent
 from deepagents.backends import BackendProtocol
 from deepagents.middleware.filesystem import FilesystemPermission
-from langchain_nebius import ChatNebius
 from langchain_tavily import TavilyCrawl, TavilyExtract, TavilyMap, TavilySearch
 
+from model_factory import build_chat_model
 from schemas import ResearchTaskResult
 
 TODAY = time.strftime("%Y-%m-%d")
@@ -24,9 +24,10 @@ GENERAL_PURPOSE_FACT_SUBAGENT = SubAgent(
     system_prompt=f"""You are a general-purpose competitive-intelligence fact worker.
 
 Today is {TODAY}. You receive exactly one objective for one company. Follow it
-narrowly. Read the requested skill files before researching. Return the useful
-result in the requested structure because the parent agent cannot see your tool
-outputs unless you include the findings.
+narrowly. Read the requested skill files before researching. Persist your
+findings to the artifact path specified by the parent with `write_file`, then
+return that path plus a compact structured summary. The parent may not retain
+your tool outputs, so the persisted artifact is the durable handoff.
 
 Rules:
 - Do fact research only. Do not write marketing copy, sales copy, or briefs.
@@ -50,6 +51,10 @@ Rules:
   `exact`, `partial`, `context`, or `lead_only`.
 - Only `source_fit: exact` can be recommended as `status: verified`. If source
   fit is weaker, narrow the claim or mark it `needs_review`.
+- Before finishing, write a markdown artifact to the exact path the parent gives
+  you, usually `/companies/<company_uuid>/research/<objective>.md`. Include:
+  source entries, claim candidates, rejected/weak leads, evidence gaps, and
+  notes. If evidence is thin, write the artifact anyway and explain the gaps.
 
 Tool guidance:
 - Use `tavily_search` for discovery, recent information, official pages, news,
@@ -67,7 +72,7 @@ Tool guidance:
 def _general_purpose_fact_subagent(model_name: str) -> SubAgent:
     return {
         **GENERAL_PURPOSE_FACT_SUBAGENT,
-        "model": ChatNebius(model=model_name),
+        "model": build_chat_model(model_name),
     }
 
 
@@ -86,18 +91,34 @@ Workflow:
    category, buyer/use case, product surface, and the research lanes that matter.
 4. Use `write_todos` to plan company identity, source discovery, objective
    research, ledger normalization, verification queues, and run summaries.
-5. [MANDATORY] For each company, dispatch bounded research `general-purpose` tasks. Each
-   task must specify: one objective, company name, UUID folder, skills to read,
-   source strategy, output contract, and "do not write marketing copy".
-6. Ensure `/companies/<company_uuid>/sources.md` exists and contains enough
+5. [MANDATORY] For each company, dispatch bounded research `general-purpose`
+   tasks for each default fact objective in parallel. For a company, issue one
+   `task` call per research lane in the same coordinator turn when possible,
+   then wait for the batch to return before synthesis. Each task must specify:
+   one objective, company name, UUID folder, exact artifact path under
+   `/companies/<company_uuid>/research/`, skills to read, source strategy,
+   output contract, and "do not write marketing copy". Each parallel task must
+   write a distinct artifact path; no two tasks may write the same file.
+6. Require subagents to write their lane artifacts. The required lane artifacts
+   are:
+   - `/companies/<company_uuid>/research/source_pack.md`
+   - `/companies/<company_uuid>/research/pricing.md`
+   - `/companies/<company_uuid>/research/product_capabilities.md`
+   - `/companies/<company_uuid>/research/security_compliance.md`
+   - `/companies/<company_uuid>/research/benchmarks_latency.md`
+   - `/companies/<company_uuid>/research/market_momentum_sentiment.md`
+7. After all lane artifacts are written, the lead coordinator must read them and
+   synthesize `/companies/<company_uuid>/sources.md`. Do not synthesize
+   `sources.md` from memory alone.
+8. Ensure `/companies/<company_uuid>/sources.md` exists and contains enough
    source-pack detail for later ledger creation.
-7. After `sources.md` exists, the lead coordinator owns final artifact creation.
+9. After `sources.md` exists, the lead coordinator owns final artifact creation.
    Do not rely on a subagent as the only writer of final artifacts. The lead
-   coordinator must read `company.json`, `sources.md`,
+   coordinator must read `company.json`, `sources.md`, the lane artifacts,
    `/skills/claim-ledger-builder/SKILL.md`, and
    `/skills/claim-safety-review/SKILL.md`, then call `write_file` for:
    `facts.yaml`, `verification-queue.md`, and `run-summary.md`.
-8. Verify the required company files exist before your final response. If any
+10. Verify the required company files exist before your final response. If any
    required file is missing, write it yourself before replying.
 
 Default fact objectives per company:
@@ -115,6 +136,12 @@ Artifact contract:
 - `/companies.json` is owned by the runtime. Read it; do not rewrite it.
 - `/companies/<company_uuid>/company.json` may be pre-seeded by the runtime.
   Update it only when research adds useful identity details.
+- `/companies/<company_uuid>/research/source_pack.md`
+- `/companies/<company_uuid>/research/pricing.md`
+- `/companies/<company_uuid>/research/product_capabilities.md`
+- `/companies/<company_uuid>/research/security_compliance.md`
+- `/companies/<company_uuid>/research/benchmarks_latency.md`
+- `/companies/<company_uuid>/research/market_momentum_sentiment.md`
 - `/companies/<company_uuid>/sources.md`
 - `/companies/<company_uuid>/facts.yaml`
 - `/companies/<company_uuid>/verification-queue.md`
@@ -124,7 +151,8 @@ Persistence contract:
 - Durable output is created only by `write_file`; final chat text is just a
   status note and is not persisted by the CLI.
 - Do not finish until every scoped company has the agent-owned files:
-  `sources.md`, `facts.yaml`, `verification-queue.md`, and `run-summary.md`.
+  `research/*.md`, `sources.md`, `facts.yaml`, `verification-queue.md`, and
+  `run-summary.md`.
 - Missing or incomplete evidence is not a reason to omit files. Write supported
   claims to `facts.yaml`, unresolved items to `verification-queue.md`, and
   coverage/gaps to `run-summary.md`.
@@ -157,6 +185,8 @@ Evidence calibration:
     `vendor_claim` for company-authored claims that are not independently
     proven, `third_party_report` for press/analyst/investor/database claims,
     and `inference` for derived conclusions.
+    Do not use evidence posture values as `source_type`; `source_type` must stay
+    in the allowed source taxonomy.
   - `source_fit`: `exact` when the source explicitly states the narrow claim,
     `partial` when it supports only part of the claim, `context` when it only
     helps explain the area, and `lead_only` when it is useful for discovery but
@@ -217,7 +247,7 @@ def build_fact_agent(
 ):
     """Construct the competitive-intelligence fact-gathering agent."""
     subagent_model_name = subagent_model_name or model_name
-    model = ChatNebius(model=model_name)
+    model = build_chat_model(model_name)
     return create_deep_agent(
         model=model,
         tools=_fact_tools(),

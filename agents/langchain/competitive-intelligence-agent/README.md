@@ -1,6 +1,6 @@
 # Competitive Intelligence Fact Ledger
 
-A LangChain **Deep Agents** app for source-backed competitive intelligence, powered by an LLM served by [Nebius Token Factory](https://tokenfactory.nebius.com/) and web research via [Tavily](https://tavily.com/).
+A LangChain **Deep Agents** app for source-backed competitive intelligence, powered by provider-aware LangChain chat models and web research via [Tavily](https://tavily.com/).
 
 The app is intentionally split into two phases:
 
@@ -32,6 +32,7 @@ Then edit `.env`:
 
 ```bash
 NEBIUS_API_KEY=your-nebius-api-key
+OPENAI_API_KEY=your-openai-api-key
 TAVILY_API_KEY=your-tavily-api-key
 ```
 
@@ -95,8 +96,8 @@ uv run cli.py "Tavily vs Exa" --write "Write a neutral buyer comparison."
 | `--write TEXT` | Generate a markdown asset from persisted facts using the guidance prompt. |
 | `--force` | Rerun fact collection even when facts exist. |
 | `--output PATH` | Artifact root. Defaults to `./output`. |
-| `--model TEXT` | Coordinator model served by Nebius Token Factory. |
-| `--subagent-model TEXT` | General-purpose subagent model served by Nebius Token Factory. Defaults to `--model`. |
+| `--model TEXT` | Coordinator model spec. Use `openai:<model>` or `nebius:<model>`; bare names use Nebius. Defaults to `moonshotai/Kimi-K2.6`. |
+| `--subagent-model TEXT` | General-purpose subagent model spec. Defaults to `openai:gpt-4.1`. Use `nebius:<model>` to route subagents through Nebius. |
 | `--recursion-limit INT` | Bump for larger competitor sets. |
 
 ## Files

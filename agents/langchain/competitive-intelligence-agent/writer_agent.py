@@ -7,8 +7,8 @@ import time
 from deepagents import SubAgent, create_deep_agent
 from deepagents.backends import BackendProtocol
 from deepagents.middleware.filesystem import FilesystemPermission
-from langchain_nebius import ChatNebius
 
+from model_factory import build_chat_model
 from schemas import WriterTaskResult
 
 TODAY = time.strftime("%Y-%m-%d")
@@ -48,7 +48,7 @@ Rules:
 def _general_purpose_writer_subagent(model_name: str) -> SubAgent:
     return {
         **GENERAL_PURPOSE_WRITER_SUBAGENT,
-        "model": ChatNebius(model=model_name),
+        "model": build_chat_model(model_name),
     }
 
 
@@ -105,7 +105,7 @@ def build_writer_agent(
 ):
     """Construct the ledger-grounded markdown writer agent."""
     subagent_model_name = subagent_model_name or model_name
-    model = ChatNebius(model=model_name)
+    model = build_chat_model(model_name)
     return create_deep_agent(
         model=model,
         tools=[],
