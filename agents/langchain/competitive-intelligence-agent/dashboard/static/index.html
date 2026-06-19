@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CI Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <h2>CI LEDGER</h2>
+      <div class="caption" id="caption">// loading companies //</div>
+
+      <div class="company-radio" id="company-list"></div>
+
+      <div class="filter-block" id="filters" style="display:none">
+        <h3>Search</h3>
+        <input type="text" id="search" placeholder="id / claim / source / notes…" autocomplete="off"/>
+
+        <div class="filter-block" style="border-top:none; padding-top:14px;">
+          <h3>Category</h3>
+          <div class="multi" id="cats"></div>
+
+          <h3>Confidence</h3>
+          <div class="multi" id="confs">
+            <span class="chip" data-v="high">HIGH</span>
+            <span class="chip" data-v="medium">MED</span>
+            <span class="chip" data-v="low">LOW</span>
+          </div>
+
+          <h3>Status</h3>
+          <div class="multi" id="statuses">
+            <span class="chip" data-v="verified">VERIFIED</span>
+            <span class="chip" data-v="needs_review">REVIEW</span>
+            <span class="chip" data-v="stale">STALE</span>
+            <span class="chip" data-v="conflicting">CONFLICT</span>
+            <span class="chip" data-v="rejected">REJECTED</span>
+          </div>
+
+          <h3>Risk</h3>
+          <div class="multi" id="risks">
+            <span class="chip" data-v="low">LOW</span>
+            <span class="chip" data-v="medium">MED</span>
+            <span class="chip" data-v="high">HIGH</span>
+          </div>
+
+          <h3>Source type</h3>
+          <div class="multi" id="srcs"></div>
+
+          <h3>Evidence posture</h3>
+          <div class="multi" id="postures"></div>
+
+          <h3 style="margin-top:14px">Toggles</h3>
+          <label class="toggle"><input type="checkbox" id="copy-safe-only"/> copy-safe only</label>
+          <label class="toggle"><input type="checkbox" id="attention-only"/> needs attention only</label>
+        </div>
+      </div>
+
+      <button class="refresh-btn" id="refresh-btn" style="display:none">↻ refresh</button>
+    </aside>
+
+    <main class="main">
+      <div class="tab-strip">
+        <div class="tab active" data-tab="ledger">LEDGER</div>
+        <div class="tab" data-tab="queue">VERIFICATION QUEUE</div>
+      </div>
+
+      <div id="dossier"></div>
+      <div id="kpi"></div>
+      <div id="catbar"></div>
+      <hr/>
+      <div id="ledger-body">
+        <div class="state-msg blink">loading</div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
