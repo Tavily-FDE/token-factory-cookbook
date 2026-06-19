@@ -53,7 +53,6 @@ output/
       sources.md
       facts.yaml
       verification-queue.md
-      run-summary.md
 ```
 
 If facts already exist, the command lists the existing files instead of rerunning research. Use `--force` to rebuild:
@@ -78,7 +77,6 @@ output/
       draft.md
       claims-used.md
       avoided-claims.md
-      run-summary.md
 ```
 
 Writer generation requires existing facts. It will fail fast if the fact layer has not been gathered first.

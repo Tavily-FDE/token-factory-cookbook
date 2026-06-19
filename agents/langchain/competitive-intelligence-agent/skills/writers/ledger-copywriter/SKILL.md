@@ -25,7 +25,6 @@ Write:
 - `/drafts/<scope>/draft.md`
 - `/drafts/<scope>/claims-used.md`
 - `/drafts/<scope>/avoided-claims.md`
-- `/drafts/<scope>/run-summary.md`
 
 ## Gotchas
 

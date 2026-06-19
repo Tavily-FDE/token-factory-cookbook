@@ -10,8 +10,8 @@ Single-company scope. Generic subagent split:
 
 The coordinator owns no Tavily tools. It dispatches the explorer once,
 dispatches researchers in parallel for the topics the explorer found, then
-synthesizes ``sources.md``, ``facts.yaml``, ``verification-queue.md`` and
-``run-summary.md`` itself.
+synthesizes ``sources.md``, ``facts.yaml``, and ``verification-queue.md``
+itself.
 """
 
 from __future__ import annotations
@@ -175,8 +175,8 @@ LEDGER_WRITER_SUBAGENT: SubAgent = SubAgent(
         "returned, to synthesize the final fact artifacts. Pass it the "
         "company name, the UUID folder, and the list of research/*.md files "
         "to read. It has no Tavily tools — it reads research artifacts and "
-        "the ledger/safety skills, then writes sources.md, facts.yaml, "
-        "verification-queue.md, and run-summary.md."
+        "the ledger/safety skills, then writes sources.md, facts.yaml, and "
+        "verification-queue.md."
     ),
     system_prompt=f"""You are the fact-layer synthesizer for one company. Today is {TODAY}.
 
@@ -186,7 +186,7 @@ Before writing anything, read:
 - /skills/facts/claim-ledger-builder/SKILL.md
 - /skills/facts/claim-safety-review/SKILL.md
 
-Then write, with `write_file`, all four final artifacts for the company:
+Then write, with `write_file`, all three final artifacts for the company:
 - /companies/<uuid>/sources.md — the consolidated source-pack index, built
   from the source entries in the research files. Do not synthesize from
   memory; walk every research/*.md.
@@ -199,8 +199,6 @@ Then write, with `write_file`, all four final artifacts for the company:
 - /companies/<uuid>/verification-queue.md — weak, stale, conflicting,
   rejected, or `copy_safe: false` items moved out of the verified ledger,
   with reasons.
-- /companies/<uuid>/run-summary.md — coverage notes, claim counts, and
-  evidence gaps per category.
 
 Rules:
 - You have no Tavily tools. Do not browse, search, extract, map, or crawl.
@@ -209,14 +207,14 @@ Rules:
   research file states a fact without a source URL, do not promote it to
   facts.yaml; move it to verification-queue.md.
 - Missing or incomplete evidence is not a reason to omit a file. Write
-  supported claims to facts.yaml, unresolved items to
-  verification-queue.md, and coverage notes to run-summary.md. If
-  evidence is too thin for any claims, write `facts.yaml` as an empty
-  YAML list (`[]`) and explain in verification-queue.md and run-summary.md.
+  supported claims to facts.yaml and unresolved items to
+  verification-queue.md. If evidence is too thin for any claims, write
+  `facts.yaml` as an empty YAML list (`[]`) and explain in
+  verification-queue.md.
 - Do not write marketing copy.
 - Do not rewrite /companies.json or /companies/<uuid>/company.json.
 - Do not stop after writing only sources.md. The run is incomplete until
-  all four files exist.
+  all three files exist.
 
 Return a concise note listing the files written and claim counts per
 category. The persisted files are the durable handoff.
@@ -269,9 +267,8 @@ Workflow:
 5. After all `researcher` tasks return, dispatch the `ledger-writer`
    subagent exactly once. The task must name the company, the UUID folder,
    and list every /companies/<uuid>/research/*.md file for it to read. The
-   ledger-writer owns synthesis of sources.md, facts.yaml,
-   verification-queue.md, and run-summary.md — you do not write those
-   yourself.
+   ledger-writer owns synthesis of sources.md, facts.yaml, and
+   verification-queue.md — you do not write those yourself.
 
 Artifact contract:
 - /companies.json: runtime-owned. Read only; do not rewrite.
@@ -279,8 +276,8 @@ Artifact contract:
   useful identity details.
 - /companies/<uuid>/research/source_pack.md, category_context.md, <topic>.md:
   written by explorer and researcher subagents.
-- /companies/<uuid>/sources.md, facts.yaml, verification-queue.md,
-  run-summary.md: written by the ledger-writer subagent.
+- /companies/<uuid>/sources.md, facts.yaml, and verification-queue.md:
+  written by the ledger-writer subagent.
 
 Durable output happens only through `write_file`. The run is incomplete until
 every file in the artifact contract exists for the company. If a subagent

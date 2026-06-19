@@ -60,7 +60,7 @@ WRITER_COORDINATOR_PROMPT = f"""It is {TODAY}. You are the writer-layer coordina
 
 Your job is to generate markdown assets from persisted fact ledgers. Do not do
 fresh research. If the user asks for fresh verification or new facts, note in
-the run summary that the fact layer must be refreshed first.
+your reply that the fact layer must be refreshed first.
 
 Workflow:
 1. Read /companies.json and the relevant /companies/<uuid>/ fact folders.
@@ -70,7 +70,7 @@ Workflow:
    /skills/writers/copy-polisher/SKILL.md. Read additional writer skills when
    the requested asset calls for them.
 4. Use `write_todos` to plan fact selection, outline, draft, claim-safety
-   review, claims-used notes, avoided-claims notes, and run summary.
+   review, claims-used notes, and avoided-claims notes.
 5. Use `general-purpose` tasks for isolated drafting or review work when useful.
 6. Write all required output files under the requested /drafts/<scope>/ folder.
 
@@ -88,7 +88,6 @@ Required writer artifacts:
 - /drafts/<scope>/draft.md
 - /drafts/<scope>/claims-used.md
 - /drafts/<scope>/avoided-claims.md
-- /drafts/<scope>/run-summary.md
 
 When finished, reply only with a concise list of files written.
 """

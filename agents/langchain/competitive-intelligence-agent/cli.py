@@ -56,14 +56,12 @@ COMPANY_FACT_FILES = (
     "sources.md",
     "facts.yaml",
     "verification-queue.md",
-    "run-summary.md",
 )
 
 WRITER_FILES = (
     "draft.md",
     "claims-used.md",
     "avoided-claims.md",
-    "run-summary.md",
 )
 
 
@@ -375,7 +373,7 @@ def _company_needs_synthesis_only(company_dir: Path) -> bool:
         return False
     return any(
         not (company_dir / name).is_file()
-        for name in ("sources.md", "facts.yaml", "verification-queue.md", "run-summary.md")
+        for name in ("sources.md", "facts.yaml", "verification-queue.md")
     )
 
 
@@ -465,12 +463,6 @@ def _print_existing_facts(console: Console, output_dir: Path, scope_registry: di
     console.print(Panel(f"[bold]Fact root:[/] {output_dir}", title="existing facts", border_style="green"))
     for path in files:
         console.print(f"[green]•[/] {path.relative_to(output_dir)}")
-
-    for company_dir in _company_dirs(output_dir, scope_registry):
-        summary = company_dir / "run-summary.md"
-        if summary.exists():
-            console.print(Rule(f"{company_dir.name} run summary", style="dim"))
-            console.print(Markdown(summary.read_text(encoding="utf-8")))
 
 
 def _build_backend(output_dir: Path) -> CompositeBackend:
@@ -581,8 +573,7 @@ def _synthesize_facts_user_request(scope: str, company_name: str, company_uuid: 
         "/skills/facts/claim-safety-review/SKILL.md, then writes "
         f"/companies/{company_uuid}/sources.md, "
         f"/companies/{company_uuid}/facts.yaml, "
-        f"/companies/{company_uuid}/verification-queue.md, and "
-        f"/companies/{company_uuid}/run-summary.md with `write_file`."
+        f"/companies/{company_uuid}/verification-queue.md with `write_file`."
     )
 
 
@@ -840,7 +831,7 @@ def main(
         "Generate the requested markdown asset from verified, copy-safe facts only. "
         "Do not browse or perform fresh verification; if new verification is needed, note that the fact layer must be refreshed. "
         f"Write /drafts/{scope_slug}/draft.md, /drafts/{scope_slug}/claims-used.md, "
-        f"/drafts/{scope_slug}/avoided-claims.md, and /drafts/{scope_slug}/run-summary.md."
+        f"and /drafts/{scope_slug}/avoided-claims.md."
     )
 
     try:
