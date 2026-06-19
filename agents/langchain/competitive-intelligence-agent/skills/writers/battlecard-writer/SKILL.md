@@ -14,7 +14,6 @@ Battlecards are for live sales conversations. Make them scannable and grounded.
    renewal, displacement, or shortlist comparison.
 3. Use verified copy-safe claims for talk tracks and proof points.
 4. Put uncertain claims in avoided/needs-verification notes, not talk tracks.
-5. Include competitor strengths so reps know when not to force a bad fit.
 
 ## Suggested Structure
 

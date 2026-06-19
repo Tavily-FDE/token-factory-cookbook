@@ -41,8 +41,9 @@ Rules:
   `copy_safe: false` claims only in avoided/needs-verification notes.
 - Do not invent facts, competitor weaknesses, gaps, prices, security claims,
   benchmark claims, or superlatives.
-- Be fair to competitors. Favoring a company means framing and prioritizing
-  verified facts, not distorting evidence.
+- Favoring a company means framing and selecting verified facts, not
+  distorting or inventing evidence. Follow the user's framing and tone; do not
+  impose fairness, balance, or independent framing they did not request.
 """,
     skills=["/skills/writers"],
 )

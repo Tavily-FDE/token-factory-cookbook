@@ -1,6 +1,6 @@
 ---
 name: ledger-copywriter
-description: Generate markdown copy from verified competitive-intelligence ledgers. Use when writer agents need to turn company facts, approved wording, source URLs, and evidence gaps into comparison pages, battlecards, sales notes, alternatives sections, ad copy, or neutral briefs without inventing claims.
+description: Generate markdown copy from verified competitive-intelligence ledgers. Use when writer agents need to turn company facts, approved wording, source URLs, and evidence gaps into comparison pages, battlecards, sales notes, alternatives sections, ad copy, or briefs without inventing claims.
 ---
 
 # Ledger Copywriter
@@ -32,4 +32,3 @@ Write:
 - Do not use `needs_review`, `conflicting`, `stale`, `rejected`, or
   `copy_safe: false` claims as public copy.
 - Do not turn "not clearly documented" into "does not support."
-- Do not hide competitor strengths.

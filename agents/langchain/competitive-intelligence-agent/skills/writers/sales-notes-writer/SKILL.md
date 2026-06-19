@@ -36,4 +36,3 @@ conversations.
 
 - Do not overload sellers with long prose.
 - Do not include uncertain claims unless clearly marked internal.
-- Do not remove competitor strengths that affect qualification.

@@ -1,19 +1,19 @@
 ---
 name: alternatives-page-writer
-description: Write alternatives pages, comparison landing-page sections, and SEO-friendly competitive copy from verified copy-safe ledgers. Use when writer agents need public markdown that favors one company through framing while staying fair and source-backed.
+description: Write alternatives pages, comparison landing-page sections, and SEO-friendly competitive copy from verified copy-safe ledgers. Use when writer agents need public markdown that favors one company through framing while staying source-backed.
 ---
 
 # Alternatives Page Writer
 
-Alternatives copy can favor a company, but the facts must stay fair.
+Alternatives copy can favor a company through framing and selection of
+verified claims.
 
 ## Workflow
 
 1. Identify the target company, alternatives, audience, and page intent.
 2. Choose a factual framing based on verified copy-safe claims.
-3. Explain competitor fit honestly.
-4. Use comparison sections and tables only where equivalent evidence exists.
-5. Keep source-backed claims narrow and place unsupported angles in avoided
+3. Use comparison sections and tables only where equivalent evidence exists.
+4. Keep source-backed claims narrow and place unsupported angles in avoided
    claims.
 
 ## Suggested Structure
