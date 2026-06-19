@@ -1,4 +1,9 @@
-"""Lightweight structured output models for competitive-intelligence facts."""
+"""Runtime-side validation models for competitive-intelligence facts.
+
+Subagents persist their work to files; they no longer return structured
+Pydantic results. The only model kept here is `ClaimCandidate`, used by the
+CLI to validate `/companies/<uuid>/facts.yaml` entries at run end.
+"""
 
 from __future__ import annotations
 
@@ -43,20 +48,8 @@ EvidencePosture = Literal["direct_fact", "vendor_claim", "third_party_report", "
 SourceFit = Literal["exact", "partial", "context", "lead_only"]
 
 
-class SourcePackEntry(BaseModel):
-    """One reusable source discovered for a company."""
-
-    model_config = ConfigDict(extra="allow")
-
-    url: str = Field(min_length=1)
-    title: str = ""
-    source_type: SourceType
-    use: str = Field(min_length=1)
-    notes: str = ""
-
-
 class ClaimCandidate(BaseModel):
-    """One atomic source-backed claim candidate."""
+    """One atomic source-backed claim, validated from persisted `facts.yaml`."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -80,81 +73,3 @@ class ClaimCandidate(BaseModel):
     copy_safe: bool = False
     risk_level: RiskLevel
     notes: str = ""
-
-
-class ResearchTaskResult(BaseModel):
-    """Structured result returned by one general-purpose fact task."""
-
-    model_config = ConfigDict(extra="allow")
-
-    company: str = Field(min_length=1)
-    objective: str = Field(min_length=1)
-    source_pack: list[SourcePackEntry] = Field(default_factory=list)
-    claim_candidates: list[ClaimCandidate] = Field(default_factory=list)
-    evidence_gaps: list[str] = Field(default_factory=list)
-    artifact_paths: list[str] = Field(default_factory=list)
-    notes: str = ""
-
-
-class CompanyFactsSummary(BaseModel):
-    """Short summary for a company's fact-gathering run."""
-
-    model_config = ConfigDict(extra="allow")
-
-    company_id: str = Field(min_length=1)
-    company: str = Field(min_length=1)
-    category: str = ""
-    sources_count: int = 0
-    claims_count: int = 0
-    needs_review_count: int = 0
-    evidence_gaps: list[str] = Field(default_factory=list)
-    run_summary: str = ""
-
-
-class ClaimUsed(BaseModel):
-    """One ledger claim used in generated copy."""
-
-    model_config = ConfigDict(extra="allow")
-
-    claim_id: str = Field(min_length=1)
-    company: str = Field(min_length=1)
-    source_url: str = Field(min_length=1)
-    wording_used: str = Field(min_length=1)
-    usage_context: str = ""
-
-
-class AvoidedClaim(BaseModel):
-    """One claim or claim area intentionally avoided by the writer."""
-
-    model_config = ConfigDict(extra="allow")
-
-    claim_id: str | None = None
-    company: str = ""
-    claim: str = Field(min_length=1)
-    reason: str = Field(min_length=1)
-    source_url: str = ""
-
-
-class WriterTaskResult(BaseModel):
-    """Structured result returned by one writer subtask."""
-
-    model_config = ConfigDict(extra="allow")
-
-    asset_type: str = ""
-    draft_markdown: str = ""
-    claims_used: list[ClaimUsed] = Field(default_factory=list)
-    avoided_claims: list[AvoidedClaim] = Field(default_factory=list)
-    notes: str = ""
-
-
-class DraftSummary(BaseModel):
-    """Summary of a completed writer run."""
-
-    model_config = ConfigDict(extra="allow")
-
-    scope: str = Field(min_length=1)
-    guidance: str = ""
-    draft_path: str = ""
-    claims_used_count: int = 0
-    avoided_claims_count: int = 0
-    run_summary: str = ""

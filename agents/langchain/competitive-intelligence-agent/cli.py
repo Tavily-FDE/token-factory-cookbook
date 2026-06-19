@@ -1,13 +1,12 @@
 """CLI for the fact-ledger competitive-intelligence agent.
 
-Two explicit steps:
+Two explicit steps, run one company at a time in the fact phase:
 
-    uv run cli.py "Tavily vs Exa vs Parallel" --gather-facts
+    uv run cli.py "Tavily" --gather-facts
     uv run cli.py "Tavily vs Exa" --write "Write a Tavily-favored comparison page"
 
 Facts are persisted under the output directory by scope. Brief generation reads
-those persisted facts and should not rediscover the web unless the user asks for
-fresh verification.
+those persisted facts and does not rediscover the web.
 """
 
 from __future__ import annotations
@@ -40,8 +39,8 @@ from model_factory import model_provider
 from schemas import ClaimCandidate
 from writer_agent import build_writer_agent
 
-DEFAULT_COORDINATOR_MODEL = "moonshotai/Kimi-K2.6"
-DEFAULT_SUBAGENT_MODEL = "openai:gpt-5.5"
+DEFAULT_COORDINATOR_MODEL = "zai-org/GLM-5.2"
+DEFAULT_SUBAGENT_MODEL = "moonshotai/Kimi-K2.6"
 
 _TODO_TOOL = "write_todos"
 _TASK_TOOL = "task"
@@ -57,15 +56,6 @@ COMPANY_FACT_FILES = (
     "facts.yaml",
     "verification-queue.md",
     "run-summary.md",
-)
-
-COMPANY_RESEARCH_FILES = (
-    "source_pack.md",
-    "pricing.md",
-    "product_capabilities.md",
-    "security_compliance.md",
-    "benchmarks_latency.md",
-    "market_momentum_sentiment.md",
 )
 
 WRITER_FILES = (
@@ -329,6 +319,13 @@ def _company_dirs(output_dir: Path, scope_registry: dict[str, str]) -> list[Path
     return [output_dir / "companies" / company_id for company_id in scope_registry.values()]
 
 
+def _research_files(company_dir: Path) -> list[Path]:
+    research_dir = company_dir / "research"
+    if not research_dir.is_dir():
+        return []
+    return sorted(research_dir.glob("*.md"))
+
+
 def _fact_files(output_dir: Path, scope_registry: dict[str, str]) -> list[Path]:
     paths: list[Path] = []
     registry_path = output_dir / "companies.json"
@@ -339,16 +336,22 @@ def _fact_files(output_dir: Path, scope_registry: dict[str, str]) -> list[Path]:
             path = company_dir / name
             if path.is_file():
                 paths.append(path)
-        research_dir = company_dir / "research"
-        for name in COMPANY_RESEARCH_FILES:
-            path = research_dir / name
-            if path.is_file():
-                paths.append(path)
+        paths.extend(_research_files(company_dir))
     return sorted(set(paths))
 
 
+def _facts_complete_for_company(company_dir: Path) -> bool:
+    if not (company_dir / "facts.yaml").is_file():
+        return False
+    if not (company_dir / "sources.md").is_file():
+        return False
+    if not _research_files(company_dir):
+        return False
+    return True
+
+
 def _facts_exist(output_dir: Path, scope_registry: dict[str, str]) -> bool:
-    return any((company_dir / "facts.yaml").exists() or (company_dir / "sources.md").exists() for company_dir in _company_dirs(output_dir, scope_registry))
+    return all(_facts_complete_for_company(c) for c in _company_dirs(output_dir, scope_registry))
 
 
 def _missing_company_fact_files(output_dir: Path, scope_registry: dict[str, str]) -> list[Path]:
@@ -358,10 +361,10 @@ def _missing_company_fact_files(output_dir: Path, scope_registry: dict[str, str]
             path = company_dir / name
             if not path.is_file():
                 missing.append(path)
-        for name in COMPANY_RESEARCH_FILES:
-            path = company_dir / "research" / name
-            if not path.is_file():
-                missing.append(path)
+        # Variable-named research artifacts are produced by subagents; require
+        # at least one under research/, but do not pin specific filenames.
+        if not _research_files(company_dir):
+            missing.append(company_dir / "research" / "source_pack.md")
     return missing
 
 
@@ -445,49 +448,13 @@ def _print_existing_facts(console: Console, output_dir: Path, scope_registry: di
             console.print(Markdown(summary.read_text(encoding="utf-8")))
 
 
-def _company_folder_instructions(scope_registry: dict[str, str]) -> str:
-    lines = ["COMPANY OUTPUT FOLDERS:"]
-    for name, company_id in scope_registry.items():
-        lines.append(f"- {name}: /companies/{company_id}")
-    return "\n".join(lines)
-
-
-def _repair_fact_artifacts_request(scope: str, scope_registry: dict[str, str], missing: list[Path], output: Path) -> str:
-    missing_virtual = []
-    for path in missing:
-        try:
-            missing_virtual.append("/" + path.relative_to(output).as_posix())
-        except ValueError:
-            missing_virtual.append(str(path))
-
-    return (
-        "MODE: repair missing fact artifacts only.\n"
-        f"SCOPE: {scope}\n\n"
-        f"{_company_folder_instructions(scope_registry)}\n\n"
-        "Do not browse, crawl, search, extract, or use task. Use only filesystem reads and writes.\n"
-        "For each listed company folder, read company.json, sources.md if it exists, any existing "
-        "research lane artifacts under /companies/<company_uuid>/research/, "
-        "/skills/claim-ledger-builder/SKILL.md, and /skills/claim-safety-review/SKILL.md.\n"
-        "Your next actions after reading must be write_file calls for every missing artifact. "
-        "Do not explain, summarize, plan, or finish until the write_file calls have completed. "
-        "Write every missing required artifact now with write_file. Missing files:\n"
-        + "\n".join(f"- {path}" for path in missing_virtual)
-        + "\n\n"
-        "If a missing path is a research lane artifact, write a compact lane note from existing sources.md "
-        "or write a placeholder explaining that the lane was not produced and should be rerun. "
-        "If sources.md has enough evidence, create a compact facts.yaml with atomic claim records. "
-        "If evidence is too thin, write facts.yaml as an empty YAML list (`[]`) and put the gaps in "
-        "verification-queue.md. Always write run-summary.md. Do not end with only a status note. "
-        "A repair run is successful only if the missing file paths listed above now exist."
-    )
-
-
 def _build_backend(output_dir: Path) -> CompositeBackend:
     output_dir.mkdir(parents=True, exist_ok=True)
     return CompositeBackend(
         default=FilesystemBackend(root_dir=output_dir.resolve(), virtual_mode=True),
         routes={
-            "/skills/": FilesystemBackend(root_dir=_SKILLS_ROOT.resolve(), virtual_mode=True),
+            "/skills/facts/": FilesystemBackend(root_dir=(_SKILLS_ROOT / "facts").resolve(), virtual_mode=True),
+            "/skills/writers/": FilesystemBackend(root_dir=(_SKILLS_ROOT / "writers").resolve(), virtual_mode=True),
         },
     )
 
@@ -540,6 +507,18 @@ def _run_agent(
         subgraphs=True,
     )
     return render_stream(console, stream)
+
+
+def _gather_facts_user_request(scope: str, company_name: str, company_uuid: str) -> str:
+    return (
+        "MODE: gather facts only.\n"
+        f"SCOPE: {scope}\n"
+        f"COMPANY: {company_name}\n"
+        f"COMPANY FOLDER: /companies/{company_uuid}\n\n"
+        "Do not discover or research additional competitors. "
+        "Do not rewrite /companies.json. "
+        "Do not write marketing copy."
+    )
 
 
 @app.command()
@@ -612,17 +591,8 @@ def main(
         scope_registry, registry_path = _merge_company_registry(output, scope)
 
         if _facts_exist(output, scope_registry) and not force:
-            existing_missing = _missing_company_fact_files(output, scope_registry)
-            if not existing_missing:
-                _print_existing_facts(console, output, scope_registry)
-                return
-            console.print(
-                Panel(
-                    "\n".join(str(path) for path in existing_missing),
-                    title="existing facts incomplete; continuing fact collection",
-                    border_style="yellow",
-                )
-            )
+            _print_existing_facts(console, output, scope_registry)
+            return
 
         if force:
             for company_dir in _company_dirs(output, scope_registry):
@@ -643,73 +613,24 @@ def main(
                 border_style="cyan",
             )
         )
-        console.print(Rule("live agent activity", style="dim"))
 
-        user_request = (
-            "MODE: gather facts only.\n"
-            f"SCOPE: {scope}\n\n"
-            f"EXPLICIT COMPANIES TO RESEARCH: {', '.join(_candidate_company_names(scope))}\n"
-            f"{_company_folder_instructions(scope_registry)}\n\n"
-            "Do not discover or research additional competitors unless the scope explicitly asks for competitor discovery.\n\n"
-            "The CLI has already written /companies.json and minimal company.json scaffolds for the listed companies. "
-            "Update company.json only if research finds useful identity details. "
-            "Build persisted source packs, claim ledgers, a verification queue, and a run summary. "
-            "Persistence means calling write_file for every required virtual artifact; text returned in chat is not saved. "
-            "For each listed company, dispatch general-purpose subagents for the fact objectives in bounded parallel batches. "
-            "For a company, issue one task per fact objective in the same coordinator turn when possible, then wait for the "
-            "batch to return before synthesis. Require each subagent to write its findings under "
-            "/companies/<company_uuid>/research/ using these deterministic filenames: "
-            "source_pack.md, pricing.md, product_capabilities.md, security_compliance.md, benchmarks_latency.md, "
-            "and market_momentum_sentiment.md. No two parallel tasks may write the same file. "
-            "The lead coordinator must read these research files before writing "
-            "sources.md or facts.yaml. "
-            "Do not generate a marketing brief. Write company artifacts only under the UUID folders listed above: "
-            "research/*.md, sources.md, facts.yaml, verification-queue.md, and run-summary.md. "
-            "Do not rewrite /companies.json. "
-            "Do not stop after research, company.json, or sources.md; the run is incomplete until every listed company folder "
-            "has company.json plus research-authored sources.md, facts.yaml, verification-queue.md, and run-summary.md. "
-            "After sources.md exists, the lead coordinator must read company.json, sources.md, claim-ledger-builder, "
-            "and claim-safety-review, then write facts.yaml, verification-queue.md, and run-summary.md with write_file. "
-            "Do not rely on a subagent as the only writer of final artifacts. "
-            "If evidence is incomplete, write the research files anyway and move gaps to "
-            "verification-queue.md."
-        )
-        try:
-            final = _run_agent(
-                console=console,
-                mode="facts",
-                model=model,
-                subagent_model=subagent_model,
-                recursion_limit=recursion_limit,
-                user_request=user_request,
-                output_dir=output,
-            )
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Interrupted.[/]")
-            sys.exit(130)
-
-        missing = _missing_company_fact_files(output, scope_registry)
-        if missing:
-            console.print(
-                Panel(
-                    "\n".join(str(path) for path in missing),
-                    title="repairing missing fact artifacts",
-                    border_style="yellow",
-                )
-            )
+        last_stream_files: dict[str, Any] = {}
+        for company_name, company_uuid in scope_registry.items():
+            console.print(Rule(f"company: {company_name} ({company_uuid})", style="cyan"))
             try:
-                final = _run_agent(
+                result = _run_agent(
                     console=console,
                     mode="facts",
                     model=model,
                     subagent_model=subagent_model,
-                    recursion_limit=min(recursion_limit, 80),
-                    user_request=_repair_fact_artifacts_request(scope, scope_registry, missing, output),
+                    recursion_limit=recursion_limit,
+                    user_request=_gather_facts_user_request(scope, company_name, company_uuid),
                     output_dir=output,
                 )
             except KeyboardInterrupt:
                 console.print("\n[yellow]Interrupted.[/]")
                 sys.exit(130)
+            last_stream_files = result.get("files", {})
 
         validation_warnings = _validate_fact_virtual_files(_load_fact_files(output, scope_registry), scope_registry)
         if validation_warnings:
@@ -729,7 +650,7 @@ def main(
         if not written:
             console.print(
                 Panel(
-                    f"No files were written by the agent. Virtual files seen: {list(final['files'].keys()) or '(none)'}",
+                    f"No files were written by the agent. Virtual files seen: {list(last_stream_files.keys()) or '(none)'}",
                     title="no artifacts produced",
                     border_style="red",
                 )
@@ -737,16 +658,16 @@ def main(
             raise typer.Exit(code=2)
         for path in written:
             console.print(f"[green]✓[/] {path}")
+
         missing = _missing_company_fact_files(output, scope_registry)
         if missing:
             console.print(
                 Panel(
                     "\n".join(str(path) for path in missing),
-                    title="agent did not write required fact artifacts",
-                    border_style="red",
+                    title="missing fact artifacts (non-fatal; rerun with --force to retry)",
+                    border_style="yellow",
                 )
             )
-            raise typer.Exit(code=2)
         return
 
     assert write is not None
@@ -754,7 +675,7 @@ def main(
     if not _facts_exist(output, scope_registry):
         console.print(
             Panel(
-                f"No persisted facts found for scope [bold]{scope}[/].\n\n"
+                f"No complete facts found for scope [bold]{scope}[/].\n\n"
                 f"Run: [cyan]uv run cli.py {json.dumps(scope)} --gather-facts[/]",
                 title="facts required",
                 border_style="red",

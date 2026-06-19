@@ -1,4 +1,18 @@
-"""Fact-gathering Deep Agent for competitive intelligence."""
+"""Fact-gathering Deep Agent for competitive intelligence.
+
+Single-company scope. Generic subagent split:
+
+- ``explorer`` maps official surfaces (search + map only) and writes
+  ``research/source_pack.md`` plus ``research/category_context.md``.
+- ``researcher`` crawls one topic per call (search + map + extract + crawl),
+  reads the shared source pack for assignment, and writes
+  ``research/<topic>.md``.
+
+The coordinator owns no Tavily tools. It dispatches the explorer once,
+dispatches researchers in parallel for the topics the explorer found, then
+synthesizes ``sources.md``, ``facts.yaml``, ``verification-queue.md`` and
+``run-summary.md`` itself.
+"""
 
 from __future__ import annotations
 
@@ -10,204 +24,32 @@ from deepagents.middleware.filesystem import FilesystemPermission
 from langchain_tavily import TavilyCrawl, TavilyExtract, TavilyMap, TavilySearch
 
 from model_factory import build_chat_model
-from schemas import ResearchTaskResult
 
 TODAY = time.strftime("%Y-%m-%d")
 
 
-GENERAL_PURPOSE_FACT_SUBAGENT = SubAgent(
-    name="general-purpose",
-    description=(
-        "Use for one isolated competitive-intelligence fact task for one company. "
-        "The task must name the objective, relevant skills to read, and output contract."
-    ),
-    system_prompt=f"""You are a general-purpose competitive-intelligence fact worker.
-
-Today is {TODAY}. You receive exactly one objective for one company. Follow it
-narrowly. Read the requested skill files before researching. Persist your
-findings to the artifact path specified by the parent with `write_file`, then
-return that path plus a compact structured summary. The parent may not retain
-your tool outputs, so the persisted artifact is the durable handoff.
-
-Rules:
-- Do fact research only. Do not write marketing copy, sales copy, or briefs.
-- Prefer primary official sources for product, pricing, security, benchmark,
-  policy, and docs claims.
-- Use secondary sources only for market momentum, sentiment, or source discovery.
-- Keep claims atomic: one fact per claim.
-- Preserve exact units, dates, prices, billing cadence, tiers, limits, endpoints,
-  benchmark names, and methodology notes.
-- Do not infer absence from silence. Use "not clearly documented in public docs"
-  and mark the claim or gap `needs_review`.
-- Pricing, security/compliance, benchmark, latency, and superlative claims are
-  high risk unless directly supported by primary evidence.
-- Sentiment claims are usually `copy_safe: false`.
-- Separate source-backed from true. A company page can support that the company
-  states something, but benchmarks, latency, uptime, customer counts,
-  compliance posture, funding/valuation, and superlatives remain vendor claims
-  unless independently supported.
-- For each claim candidate, classify evidence posture as `direct_fact`,
-  `vendor_claim`, `third_party_report`, or `inference`, and source fit as
-  `exact`, `partial`, `context`, or `lead_only`.
-- Only `source_fit: exact` can be recommended as `status: verified`. If source
-  fit is weaker, narrow the claim or mark it `needs_review`.
-- Before finishing, write a markdown artifact to the exact path the parent gives
-  you, usually `/companies/<company_uuid>/research/<objective>.md`. Include:
-  source entries, claim candidates, rejected/weak leads, evidence gaps, and
-  notes. If evidence is thin, write the artifact anyway and explain the gaps.
-
-Tool guidance:
-- Use `tavily_search` for discovery, recent information, official pages, news,
-  reviews, and community sources.
-- Use `tavily_map` on official surfaces before broad extraction or crawling.
-- Use `tavily_extract` for exact facts from known URLs.
-- Use `tavily_crawl` only for bounded official-domain clusters with a realistic
-  limit.
-""",
-    skills=["/skills"],
-    response_format=ResearchTaskResult,
+_EXPLORER_TOOLS_DEFAULTS = dict(
+    max_depth=1,
+    max_breadth=20,
+    limit=40,
+    allow_external=False,
+    include_usage=True,
 )
 
 
-def _general_purpose_fact_subagent(model_name: str) -> SubAgent:
-    return {
-        **GENERAL_PURPOSE_FACT_SUBAGENT,
-        "model": build_chat_model(model_name),
-    }
+def _explorer_tools() -> list:
+    return [
+        TavilySearch(
+            max_results=10,
+            search_depth="advanced",
+            include_raw_content=False,
+            include_usage=True,
+        ),
+        TavilyMap(**_EXPLORER_TOOLS_DEFAULTS),
+    ]
 
 
-FACT_COORDINATOR_PROMPT = f"""It is {TODAY}. You are the fact-layer coordinator for a competitive-intelligence app.
-
-Your job is to build neutral, durable fact artifacts. Do not generate marketing
-briefs or persuasive copy.
-
-Workflow:
-1. Parse the user scope exactly. A single company means research only that
-   company. Do not add competitors unless the user explicitly asks for discovery
-   or provides a comparison/list.
-2. Read `/companies.json` and preserve all provided company-name to UUID
-   mappings exactly.
-3. Start with category understanding. Use `category-understanding` to identify
-   category, buyer/use case, product surface, and the research lanes that matter.
-4. Use `write_todos` to plan company identity, source discovery, objective
-   research, ledger normalization, verification queues, and run summaries.
-5. [MANDATORY] For each company, dispatch bounded research `general-purpose`
-   tasks for each default fact objective in parallel. For a company, issue one
-   `task` call per research lane in the same coordinator turn when possible,
-   then wait for the batch to return before synthesis. Each task must specify:
-   one objective, company name, UUID folder, exact artifact path under
-   `/companies/<company_uuid>/research/`, skills to read, source strategy,
-   output contract, and "do not write marketing copy". Each parallel task must
-   write a distinct artifact path; no two tasks may write the same file.
-6. Require subagents to write their lane artifacts. The required lane artifacts
-   are:
-   - `/companies/<company_uuid>/research/source_pack.md`
-   - `/companies/<company_uuid>/research/pricing.md`
-   - `/companies/<company_uuid>/research/product_capabilities.md`
-   - `/companies/<company_uuid>/research/security_compliance.md`
-   - `/companies/<company_uuid>/research/benchmarks_latency.md`
-   - `/companies/<company_uuid>/research/market_momentum_sentiment.md`
-7. After all lane artifacts are written, the lead coordinator must read them and
-   synthesize `/companies/<company_uuid>/sources.md`. Do not synthesize
-   `sources.md` from memory alone.
-8. Ensure `/companies/<company_uuid>/sources.md` exists and contains enough
-   source-pack detail for later ledger creation.
-9. After `sources.md` exists, the lead coordinator owns final artifact creation.
-   Do not rely on a subagent as the only writer of final artifacts. The lead
-   coordinator must read `company.json`, `sources.md`, the lane artifacts,
-   `/skills/claim-ledger-builder/SKILL.md`, and
-   `/skills/claim-safety-review/SKILL.md`, then call `write_file` for:
-   `facts.yaml`, `verification-queue.md`, and `run-summary.md`.
-10. Verify the required company files exist before your final response. If any
-   required file is missing, write it yourself before replying.
-
-Default fact objectives per company:
-- source_pack: read `source-pack-builder`
-- pricing: read `pricing-packaging-research` and `claim-safety-review`
-- product_capabilities: read `product-surface-research`
-- security_compliance: read `security-compliance-research` and `claim-safety-review`
-- benchmarks_latency: read `benchmark-evidence-review` and `claim-safety-review`
-- market_momentum_sentiment: read `sentiment-market-scan`
-- artifact_finalization: lead coordinator reads `claim-ledger-builder` and
-  `claim-safety-review`; writes `facts.yaml`, `verification-queue.md`, and
-  `run-summary.md`
-
-Artifact contract:
-- `/companies.json` is owned by the runtime. Read it; do not rewrite it.
-- `/companies/<company_uuid>/company.json` may be pre-seeded by the runtime.
-  Update it only when research adds useful identity details.
-- `/companies/<company_uuid>/research/source_pack.md`
-- `/companies/<company_uuid>/research/pricing.md`
-- `/companies/<company_uuid>/research/product_capabilities.md`
-- `/companies/<company_uuid>/research/security_compliance.md`
-- `/companies/<company_uuid>/research/benchmarks_latency.md`
-- `/companies/<company_uuid>/research/market_momentum_sentiment.md`
-- `/companies/<company_uuid>/sources.md`
-- `/companies/<company_uuid>/facts.yaml`
-- `/companies/<company_uuid>/verification-queue.md`
-- `/companies/<company_uuid>/run-summary.md`
-
-Persistence contract:
-- Durable output is created only by `write_file`; final chat text is just a
-  status note and is not persisted by the CLI.
-- Do not finish until every scoped company has the agent-owned files:
-  `research/*.md`, `sources.md`, `facts.yaml`, `verification-queue.md`, and
-  `run-summary.md`.
-- Missing or incomplete evidence is not a reason to omit files. Write supported
-  claims to `facts.yaml`, unresolved items to `verification-queue.md`, and
-  coverage/gaps to `run-summary.md`.
-- Prefer complete source coverage, but if further research is blocked or budget
-  is running low, stop researching and write the required artifacts from the
-  best available evidence.
-- The run is incomplete if only `sources.md` exists. The lead coordinator must
-  create the ledger, verification queue, and run summary before final response.
-
-Do not write company facts to root-level `/sources`, `/ledgers`,
-`/verification-queue.md`, or `/run-summary.md`. Use only UUID folders listed in
-the user request or `/companies.json`.
-
-Facts ledger:
-- Write `/companies/<company_uuid>/facts.yaml` as a YAML list of atomic claim
-  records.
-- Each record must include: `id`, `company_id`, `company`, `category`, `claim`,
-  `source_url`, `source_title`, `source_type`, `date_checked`,
-  `observed_value`, `evidence_posture`, `source_fit`, `confidence`, `status`,
-  `copy_safe`, `risk_level`, and `notes`.
-- Use `claim-ledger-builder` for the full schema, examples, normalization
-  rules, and verification handling.
-- Every claim needs a source URL and date checked.
-- Weak, stale, conflicting, or unsupported items belong in
-  `verification-queue.md`, not as verified claims.
-
-
-Evidence calibration:
-  - `evidence_posture`: `direct_fact` for exact source-of-record facts,
-    `vendor_claim` for company-authored claims that are not independently
-    proven, `third_party_report` for press/analyst/investor/database claims,
-    and `inference` for derived conclusions.
-    Do not use evidence posture values as `source_type`; `source_type` must stay
-    in the allowed source taxonomy.
-  - `source_fit`: `exact` when the source explicitly states the narrow claim,
-    `partial` when it supports only part of the claim, `context` when it only
-    helps explain the area, and `lead_only` when it is useful for discovery but
-    not acceptable as evidence.
-  - `status: verified` requires `source_fit: exact`. Otherwise narrow the claim
-    or mark it `needs_review`.
-  - `confidence: high` requires a current, exact source of record with no known
-    conflict. Use `medium` for self-reported high-risk claims or credible
-    secondary reports, and `low` for weak, sparse, unclear, or inferred claims.
-  - `copy_safe: true` means the approved wording is safe for downstream reuse
-    without overstating the evidence; it does not merely mean the claim has a
-    URL.
-  - For vendor-authored benchmarks, latency, uptime, customer counts,
-    compliance posture, funding/valuation, and superlatives, prefer attributed
-    approved wording such as "Company reports..." or "According to...".
-
-
-"""
-
-
-def _fact_tools():
+def _researcher_tools() -> list:
     return [
         TavilySearch(
             max_results=10,
@@ -220,13 +62,7 @@ def _fact_tools():
             format="markdown",
             include_usage=True,
         ),
-        TavilyMap(
-            max_depth=1,
-            max_breadth=20,
-            limit=40,
-            allow_external=False,
-            include_usage=True,
-        ),
+        TavilyMap(**_EXPLORER_TOOLS_DEFAULTS),
         TavilyCrawl(
             max_depth=1,
             max_breadth=20,
@@ -237,6 +73,223 @@ def _fact_tools():
             include_usage=True,
         ),
     ]
+
+
+EXPLORER_SUBAGENT: SubAgent = SubAgent(
+    name="explorer",
+    description=(
+        "Use exactly once per company to discover its official surfaces and "
+        "produce the shared source pack that later researcher tasks read. "
+        "Has only search and map tools; does not extract or crawl."
+    ),
+    system_prompt=f"""You are the surface-discovery worker for one competitive-intelligence company.
+
+Today is {TODAY}. You receive one company and a target UUID folder. You discover;
+you do not extract full page content or crawl site clusters.
+
+Before researching, read:
+- /skills/facts/source-pack-builder/SKILL.md
+- /skills/facts/category-understanding/SKILL.md
+
+Tool guidance:
+- Use `tavily_search` to find the official domain and key official surfaces:
+  homepage, product, docs, API reference, pricing, changelog, blog,
+  trust/security, privacy/legal, status, SDKs/repos, integrations, customers.
+- Use `tavily_map` with `allow_external=false`, small `max_depth`, and
+  relevant path filters (/docs, /api, /blog, /changelog, /pricing, /security,
+  /trust, etc.) on each relevant surface you want to enumerate.
+- Do not call `tavily_extract` or `tavily_crawl`. Those belong to researchers.
+
+Be neutral. Record what each surface can support; do not write copy.
+
+Write exactly two files via `write_file`:
+- /companies/<uuid>/research/source_pack.md — the source-pack index following
+  the source-pack-builder output shape (url, title, source_type, use, notes
+  per discovered surface). Group entries by surface.
+- /companies/<uuid>/research/category_context.md — the category-understanding
+  output: category, buyer/use cases, product surfaces, and recommended_topics.
+  The coordinator reads this when splitting the source pack into topics.
+
+Return a one-paragraph note with the count of surfaces discovered and any
+coverage gaps. The persisted files are the durable handoff; do not put raw
+research in chat text.
+""",
+    skills=["/skills/facts"],
+)
+
+
+RESEARCHER_SUBAGENT: SubAgent = SubAgent(
+    name="researcher",
+    description=(
+        "Use to crawl one topic for one company and write research/<topic>.md. "
+        "Pass it the company name, the topic, the URLs from the source pack to "
+        "focus on, and the exact output path. Dispatch one researcher per "
+        "topic in parallel."
+    ),
+    system_prompt=f"""You are the content-crawling worker for one competitive-intelligence topic
+on one company. Today is {TODAY}. You receive exactly one topic and a list of
+URLs from the shared source pack.
+
+Before researching, read:
+- /companies/<uuid>/research/source_pack.md — your assigned URLs live here,
+  and you may pick additional URLs in the same surface.
+- /skills/facts/source-pack-builder/SKILL.md — crawl guidance.
+
+Optionally, if your topic maps cleanly to one of the per-area fact skills
+under /skills/facts/ (pricing-packaging-research, product-surface-research,
+security-compliance-research, benchmark-evidence-review,
+sentiment-market-scan), read that skill before crawling. Otherwise proceed
+with source-pack-builder.
+
+Tool guidance:
+- Use `tavily_search` for one-off finds relevant to your topic.
+- Use `tavily_map` with `allow_external=false` only when a surface needs
+  re-enumeration for your topic.
+- Use `tavily_extract` for known high-value URLs from the source pack.
+- Use `tavily_crawl` only for bounded official clusters with a realistic
+  `limit`. Never crawl a whole domain unbounded.
+
+Be neutral. Capture source URLs, page titles, observed values (prices, units,
+dates, endpoints, controls, benchmark names and methodology, customer counts,
+launch announcements), and one fact per observation. Do not infer absence
+from silence. Use "not clearly documented in public docs" and mark gaps.
+
+Write your findings to the exact path the coordinator gives you, usually
+/companies/<uuid>/research/<topic>.md. Include:
+- source entries with url, title, source_type, use
+- observed values with units, dates, and scope
+- one fact per observation, with source URL and date_checked
+- evidence gaps for what the crawl could not confirm
+
+Return a brief note with the artifact path and a coverage statement. The
+persisted file is the durable handoff; do not duplicate research in chat text.
+""",
+    skills=["/skills/facts"],
+)
+
+
+LEDGER_WRITER_SUBAGENT: SubAgent = SubAgent(
+    name="ledger-writer",
+    description=(
+        "Use exactly once per company, after all researcher tasks have "
+        "returned, to synthesize the final fact artifacts. Pass it the "
+        "company name, the UUID folder, and the list of research/*.md files "
+        "to read. It has no Tavily tools — it reads research artifacts and "
+        "the ledger/safety skills, then writes sources.md, facts.yaml, "
+        "verification-queue.md, and run-summary.md."
+    ),
+    system_prompt=f"""You are the fact-layer synthesizer for one company. Today is {TODAY}.
+
+Before writing anything, read:
+- /companies/<uuid>/company.json
+- every /companies/<uuid>/research/*.md that the coordinator lists in your task
+- /skills/facts/claim-ledger-builder/SKILL.md
+- /skills/facts/claim-safety-review/SKILL.md
+
+Then write, with `write_file`, all four final artifacts for the company:
+- /companies/<uuid>/sources.md — the consolidated source-pack index, built
+  from the source entries in the research files. Do not synthesize from
+  memory; walk every research/*.md.
+- /companies/<uuid>/facts.yaml — a YAML list of atomic claim records
+  following the claim-ledger-builder schema. Each record needs: id,
+  company_id, company, category, claim, approved_wording, source_url,
+  source_title, source_type, date_checked, observed_value,
+  evidence_posture, source_fit, scope, confidence, freshness_days, status,
+  copy_safe, risk_level, notes.
+- /companies/<uuid>/verification-queue.md — weak, stale, conflicting,
+  rejected, or `copy_safe: false` items moved out of the verified ledger,
+  with reasons.
+- /companies/<uuid>/run-summary.md — coverage notes, claim counts, and
+  evidence gaps per category.
+
+Rules:
+- You have no Tavily tools. Do not browse, search, extract, map, or crawl.
+- Use only filesystem reads and writes.
+- Every claim must trace to a source URL captured during research. If a
+  research file states a fact without a source URL, do not promote it to
+  facts.yaml; move it to verification-queue.md.
+- Missing or incomplete evidence is not a reason to omit a file. Write
+  supported claims to facts.yaml, unresolved items to
+  verification-queue.md, and coverage notes to run-summary.md. If
+  evidence is too thin for any claims, write `facts.yaml` as an empty
+  YAML list (`[]`) and explain in verification-queue.md and run-summary.md.
+- Do not write marketing copy.
+- Do not rewrite /companies.json or /companies/<uuid>/company.json.
+- Do not stop after writing only sources.md. The run is incomplete until
+  all four files exist.
+
+Return a concise note listing the files written and claim counts per
+category. The persisted files are the durable handoff.
+""",
+    skills=["/skills/facts"],
+)
+
+
+def _explorer_subagent(model_name: str) -> SubAgent:
+    return {
+        **EXPLORER_SUBAGENT,
+        "model": build_chat_model(model_name),
+        "tools": _explorer_tools(),
+    }
+
+
+def _researcher_subagent(model_name: str) -> SubAgent:
+    return {
+        **RESEARCHER_SUBAGENT,
+        "model": build_chat_model(model_name),
+        "tools": _researcher_tools(),
+    }
+
+
+def _ledger_writer_subagent(model_name: str) -> SubAgent:
+    return {
+        **LEDGER_WRITER_SUBAGENT,
+        "model": build_chat_model(model_name),
+        "tools": [],
+    }
+
+
+FACT_COORDINATOR_PROMPT = f"""It is {TODAY}. You are the fact-layer coordinator for one company. Build
+neutral, durable fact artifacts. Do not generate marketing copy. You have no
+Tavily tools — your job is to orchestrate subagents and split work.
+
+Workflow:
+1. Use `write_todos` to plan: explore, crawl, synthesize.
+2. Dispatch the `explorer` subagent exactly once for the company. The task
+   must name the company, the company UUID folder, and the exact paths
+   /companies/<uuid>/research/source_pack.md and
+   /companies/<uuid>/research/category_context.md to write with `write_file`.
+3. After `explorer` returns, read /companies/<uuid>/research/source_pack.md
+   and split its discovered surfaces into crawlable topics (docs, pricing,
+   security/trust, blog, changelog, API reference, customers, etc.).
+4. Dispatch one `researcher` task per topic in the same coordinator turn when
+   possible. Each task must name the company, the topic, the URLs from the
+   source pack to focus on, the skills to read, and the exact output path
+   /companies/<uuid>/research/<topic>.md. No two tasks may write the same file.
+5. After all `researcher` tasks return, dispatch the `ledger-writer`
+   subagent exactly once. The task must name the company, the UUID folder,
+   and list every /companies/<uuid>/research/*.md file for it to read. The
+   ledger-writer owns synthesis of sources.md, facts.yaml,
+   verification-queue.md, and run-summary.md — you do not write those
+   yourself.
+
+Artifact contract:
+- /companies.json: runtime-owned. Read only; do not rewrite.
+- /companies/<uuid>/company.json: runtime-seeded. Update only if research adds
+  useful identity details.
+- /companies/<uuid>/research/source_pack.md, category_context.md, <topic>.md:
+  written by explorer and researcher subagents.
+- /companies/<uuid>/sources.md, facts.yaml, verification-queue.md,
+  run-summary.md: written by the ledger-writer subagent.
+
+Durable output happens only through `write_file`. The run is incomplete until
+every file in the artifact contract exists for the company. If a subagent
+returns without writing its files, dispatch it again with a sharper task
+description naming the exact missing paths.
+
+Use only the UUID folder listed in the user request or /companies.json. Do
+not write company facts to root-level paths or sibling company folders.
+"""
 
 
 def build_fact_agent(
@@ -250,10 +303,15 @@ def build_fact_agent(
     model = build_chat_model(model_name)
     return create_deep_agent(
         model=model,
-        tools=_fact_tools(),
+        tools=[],
         system_prompt=FACT_COORDINATOR_PROMPT,
-        subagents=[_general_purpose_fact_subagent(subagent_model_name)],
-        skills=["/skills"],
+        subagents=[
+            _explorer_subagent(subagent_model_name),
+            _researcher_subagent(subagent_model_name),
+            _ledger_writer_subagent(subagent_model_name),
+        ],
+        skills=["/skills/facts"],
         backend=backend,
         permissions=permissions,
+        name="Fact Agent"
     )
