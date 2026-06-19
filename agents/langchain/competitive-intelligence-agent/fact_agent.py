@@ -293,22 +293,30 @@ not write company facts to root-level paths or sibling company folders.
 
 
 def build_fact_agent(
-    model_name: str = None,
-    subagent_model_name: str | None = None,
+    *,
+    model_name: str,
+    explorer_model_name: str,
+    researcher_model_name: str,
+    ledger_writer_model_name: str,
     backend: BackendProtocol | None = None,
     permissions: list[FilesystemPermission] | None = None,
 ):
-    """Construct the competitive-intelligence fact-gathering agent."""
-    subagent_model_name = subagent_model_name or model_name
+    """Construct the competitive-intelligence fact-gathering agent.
+
+    Each subagent type gets its own model spec so the ledger-writer (which
+    does long-context synthesis and is most prone to summarization-induced
+    early-stop) can be pointed at a stronger model without changing the
+    explorer/researcher models.
+    """
     model = build_chat_model(model_name)
     return create_deep_agent(
         model=model,
         tools=[],
         system_prompt=FACT_COORDINATOR_PROMPT,
         subagents=[
-            _explorer_subagent(subagent_model_name),
-            _researcher_subagent(subagent_model_name),
-            _ledger_writer_subagent(subagent_model_name),
+            _explorer_subagent(explorer_model_name),
+            _researcher_subagent(researcher_model_name),
+            _ledger_writer_subagent(ledger_writer_model_name),
         ],
         skills=["/skills/facts"],
         backend=backend,

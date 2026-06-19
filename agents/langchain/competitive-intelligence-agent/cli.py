@@ -41,6 +41,7 @@ from writer_agent import build_writer_agent
 
 DEFAULT_COORDINATOR_MODEL = "zai-org/GLM-5.2"
 DEFAULT_SUBAGENT_MODEL = "moonshotai/Kimi-K2.6"
+DEFAULT_LEDGER_WRITER_MODEL = "openai:gpt-5.4"
 
 _TODO_TOOL = "write_todos"
 _TASK_TOOL = "task"
@@ -206,12 +207,12 @@ app = typer.Typer(
 )
 
 
-def _check_env(console: Console, *, mode: str, model: str, subagent_model: str | None) -> None:
+def _check_env(console: Console, *, mode: str, model_specs: list[str]) -> None:
     required = set()
     if mode == "facts":
         required.add("TAVILY_API_KEY")
 
-    for model_spec in (model, subagent_model or model):
+    for model_spec in model_specs:
         provider = model_provider(model_spec)
         if provider == "nebius":
             required.add("NEBIUS_API_KEY")
@@ -354,6 +355,30 @@ def _facts_exist(output_dir: Path, scope_registry: dict[str, str]) -> bool:
     return all(_facts_complete_for_company(c) for c in _company_dirs(output_dir, scope_registry))
 
 
+def _company_research_complete(company_dir: Path) -> bool:
+    """Research phase done — explorer + researchers, synthesis pending.
+
+    True when the explorer artifact (`research/source_pack.md`) exists and at
+    least one additional `research/*.md` topic file from a researcher exists.
+    Used to detect the resume case where expensive crawling is already on disk
+    but `facts.yaml` / `sources.md` synthesis did not complete.
+    """
+    if not (company_dir / "research" / "source_pack.md").is_file():
+        return False
+    other_topic_files = [p for p in _research_files(company_dir) if p.name != "source_pack.md"]
+    return bool(other_topic_files)
+
+
+def _company_needs_synthesis_only(company_dir: Path) -> bool:
+    """Research on disk, but at least one synthesis artifact missing."""
+    if not _company_research_complete(company_dir):
+        return False
+    return any(
+        not (company_dir / name).is_file()
+        for name in ("sources.md", "facts.yaml", "verification-queue.md", "run-summary.md")
+    )
+
+
 def _missing_company_fact_files(output_dir: Path, scope_registry: dict[str, str]) -> list[Path]:
     missing: list[Path] = []
     for company_dir in _company_dirs(output_dir, scope_registry):
@@ -476,6 +501,9 @@ def _run_agent(
     mode: str,
     model: str,
     subagent_model: str | None,
+    explorer_model: str | None = None,
+    researcher_model: str | None = None,
+    ledger_writer_model: str | None = None,
     recursion_limit: int,
     user_request: str,
     output_dir: Path,
@@ -485,7 +513,9 @@ def _run_agent(
     if mode == "facts":
         agent = build_fact_agent(
             model_name=model,
-            subagent_model_name=subagent_model,
+            explorer_model_name=explorer_model or subagent_model,
+            researcher_model_name=researcher_model or subagent_model,
+            ledger_writer_model_name=ledger_writer_model or subagent_model,
             backend=backend,
             permissions=permissions,
         )
@@ -521,6 +551,41 @@ def _gather_facts_user_request(scope: str, company_name: str, company_uuid: str)
     )
 
 
+def _synthesize_facts_user_request(scope: str, company_name: str, company_uuid: str, output_dir: Path) -> str:
+    """Resume request: research already on disk, only synthesize final artifacts.
+
+    Tells the coordinator to skip explorer/researchers and dispatch the
+    `ledger-writer` directly with the list of existing `research/*.md` files
+    to read. Salvages expensive crawl output when synthesis did not complete.
+    """
+    research_dir = output_dir / "companies" / company_uuid / "research"
+    research_files = sorted(p.name for p in _research_files(research_dir.parent))
+    file_list = "\n".join(f"- /companies/{company_uuid}/research/{name}" for name in research_files)
+    return (
+        "MODE: synthesize facts only (resume).\n"
+        f"SCOPE: {scope}\n"
+        f"COMPANY: {company_name}\n"
+        f"COMPANY FOLDER: /companies/{company_uuid}\n\n"
+        "Research phase is already complete. The following research files exist "
+        "on disk and must NOT be regenerated, overwritten, or deleted:\n"
+        f"{file_list}\n\n"
+        "Do not dispatch the `explorer` subagent. Do not dispatch `researcher` "
+        "subagents. Do not browse, search, extract, map, or crawl. Do not "
+        "rewrite /companies.json or /companies/<uuid>/company.json. Do not "
+        "write marketing copy.\n\n"
+        "Dispatch the `ledger-writer` subagent exactly once. Pass it the "
+        f"company name ({company_name}), the UUID folder "
+        f"(/companies/{company_uuid}), and the full list of research files "
+        "above. The ledger-writer reads those files plus "
+        "/skills/facts/claim-ledger-builder/SKILL.md and "
+        "/skills/facts/claim-safety-review/SKILL.md, then writes "
+        f"/companies/{company_uuid}/sources.md, "
+        f"/companies/{company_uuid}/facts.yaml, "
+        f"/companies/{company_uuid}/verification-queue.md, and "
+        f"/companies/{company_uuid}/run-summary.md with `write_file`."
+    )
+
+
 @app.command()
 def main(
     scope: Annotated[
@@ -552,11 +617,37 @@ def main(
         typer.Option(
             "--subagent-model",
             help=(
-                "General-purpose subagent model spec. Use openai:<model> or nebius:<model>. "
-                f"Defaults to {DEFAULT_SUBAGENT_MODEL}."
+                "Default subagent model spec (applies to explorer, researcher, "
+                "and ledger-writer unless overridden). Use openai:<model> or "
+                f"nebius:<model>. Defaults to {DEFAULT_SUBAGENT_MODEL}."
             ),
         ),
     ] = DEFAULT_SUBAGENT_MODEL,
+    explorer_model: Annotated[
+        str | None,
+        typer.Option(
+            "--explorer-model",
+            help="Explorer subagent model spec. Defaults to --subagent-model.",
+        ),
+    ] = None,
+    researcher_model: Annotated[
+        str | None,
+        typer.Option(
+            "--researcher-model",
+            help="Researcher subagent model spec. Defaults to --subagent-model.",
+        ),
+    ] = None,
+    ledger_writer_model: Annotated[
+        str | None,
+        typer.Option(
+            "--ledger-writer-model",
+            help=(
+                "Ledger-writer subagent model spec. Defaults to --subagent-model. "
+                "Point this at a strong long-context model for reliable "
+                "synthesis of research/*.md into facts.yaml."
+            ),
+        ),
+    ] = None,
     output: Annotated[
         Path,
         typer.Option("--output", "-o", help="Directory for persisted fact and draft artifacts."),
@@ -583,7 +674,13 @@ def main(
         raise typer.Exit(code=2)
 
     mode = "facts" if gather_facts else "write"
-    _check_env(console, mode=mode, model=model, subagent_model=subagent_model)
+    # Collect every model spec actually in play so _check_env validates all
+    # provider keys at once (e.g. mixing openai ledger-writer with nebius
+    # coordinator requires both OPENAI_API_KEY and NEBIUS_API_KEY).
+    model_specs = [model, subagent_model]
+    if mode == "facts":
+        model_specs.extend(m for m in (explorer_model, researcher_model, ledger_writer_model) if m)
+    _check_env(console, mode=mode, model_specs=[m for m in model_specs if m])
 
     scope_slug = _slugify(scope)
 
@@ -595,11 +692,19 @@ def main(
             return
 
         if force:
+            # `--force` is an explicit full rebuild: wipe the whole company
+            # folder (research + synthesis). Do not wipe partial state without
+            # `--force` — the resume path below salvages on-disk research.
             for company_dir in _company_dirs(output, scope_registry):
                 if company_dir.exists():
                     shutil.rmtree(company_dir)
 
         scaffold_paths = _write_company_scaffolds(output, scope, scope_registry)
+
+        # Resolve effective per-subagent models for display + dispatch.
+        explorer_m = explorer_model or subagent_model
+        researcher_m = researcher_model or subagent_model
+        ledger_writer_m = ledger_writer_model or subagent_model
 
         console.print(
             Panel(
@@ -607,8 +712,10 @@ def main(
                 f"[bold]Mode:[/] gather facts\n"
                 f"[bold]Output root:[/] {output}\n"
                 f"[bold]Registry:[/] {registry_path}\n"
-                f"[bold]Coordinator Model:[/] {model}\n"
-                f"[bold]Subagent Model:[/] {subagent_model}",
+                f"[bold]Coordinator:[/] {model}\n"
+                f"[bold]Explorer:[/] {explorer_m}\n"
+                f"[bold]Researcher:[/] {researcher_m}\n"
+                f"[bold]Ledger-writer:[/] {ledger_writer_m}",
                 title="source-backed fact collection",
                 border_style="cyan",
             )
@@ -616,6 +723,29 @@ def main(
 
         last_stream_files: dict[str, Any] = {}
         for company_name, company_uuid in scope_registry.items():
+            company_dir = output / "companies" / company_uuid
+            if not force and _company_needs_synthesis_only(company_dir):
+                resume_request = _synthesize_facts_user_request(scope, company_name, company_uuid, output)
+                console.print(Rule(f"company: {company_name} ({company_uuid}) — resume synthesis only", style="yellow"))
+                try:
+                    result = _run_agent(
+                        console=console,
+                        mode="facts",
+                        model=model,
+                        subagent_model=subagent_model,
+                        explorer_model=explorer_model,
+                        researcher_model=researcher_model,
+                        ledger_writer_model=ledger_writer_model,
+                        recursion_limit=recursion_limit,
+                        user_request=resume_request,
+                        output_dir=output,
+                    )
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]Interrupted.[/]")
+                    sys.exit(130)
+                last_stream_files = result.get("files", {})
+                continue
+
             console.print(Rule(f"company: {company_name} ({company_uuid})", style="cyan"))
             try:
                 result = _run_agent(
@@ -623,6 +753,9 @@ def main(
                     mode="facts",
                     model=model,
                     subagent_model=subagent_model,
+                    explorer_model=explorer_model,
+                    researcher_model=researcher_model,
+                    ledger_writer_model=ledger_writer_model,
                     recursion_limit=recursion_limit,
                     user_request=_gather_facts_user_request(scope, company_name, company_uuid),
                     output_dir=output,
@@ -663,8 +796,10 @@ def main(
         if missing:
             console.print(
                 Panel(
-                    "\n".join(str(path) for path in missing),
-                    title="missing fact artifacts (non-fatal; rerun with --force to retry)",
+                    "\n".join(str(path) for path in missing)
+                    + "\n\nRe-run without --force to resume synthesis from existing research; "
+                    "use --force only for a full rebuild (wipes research).",
+                    title="missing fact artifacts (non-fatal)",
                     border_style="yellow",
                 )
             )
