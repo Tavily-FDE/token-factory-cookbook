@@ -75,6 +75,7 @@ async function loadCompanies() {
 async function selectCompany(uuid) {
   state.currentUuid = uuid;
   state.queueMd = null;
+  renderCompanyList();
   try {
     state.currentData = await fetchJSON(`/api/companies/${uuid}`);
   } catch (e) {
@@ -85,6 +86,7 @@ async function selectCompany(uuid) {
   buildCategoryChips();
   buildSourceChips();
   buildPostureChips();
+  document.getElementById("filters").style.display = "block";
   document.getElementById("refresh-btn").style.display = "block";
   renderAll();
 }

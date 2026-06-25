@@ -638,7 +638,7 @@ def main(
                 "synthesis of research/*.md into facts.yaml."
             ),
         ),
-    ] = None,
+    ] = DEFAULT_LEDGER_WRITER_MODEL,
     output: Annotated[
         Path,
         typer.Option("--output", "-o", help="Directory for persisted fact and draft artifacts."),

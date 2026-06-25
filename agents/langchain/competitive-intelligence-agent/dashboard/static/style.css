@@ -264,7 +264,7 @@ hr { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
   cursor: pointer;
   padding: 7px 10px;
   display: grid;
-  grid-template-columns: 240px 1fr 60px 110px 80px 70px;
+  grid-template-columns: 14px minmax(210px, 280px) minmax(220px, 1fr) 60px 110px 80px 70px;
   gap: 10px;
   align-items: baseline;
   font-size: 0.78rem;
@@ -272,10 +272,17 @@ hr { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
   user-select: none;
 }
 .ci-row > summary::-webkit-details-marker { display: none; }
-.ci-row > summary::before { content: "▸"; color: var(--dimmer); width: 12px; }
+.ci-row > summary::before {
+  content: "▸";
+  color: var(--dimmer);
+  width: 12px;
+  grid-column: 1;
+  align-self: center;
+}
 .ci-row[open] > summary::before { content: "▾"; }
 
 .ci-row > summary .id {
+  grid-column: 2;
   color: var(--blue);
   font-size: 0.72rem;
   overflow: hidden;
@@ -283,11 +290,16 @@ hr { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
   white-space: nowrap;
 }
 .ci-row > summary .claim {
+  grid-column: 3;
   color: var(--bright);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ci-row > summary .conf { grid-column: 4; }
+.ci-row > summary .status { grid-column: 5; }
+.ci-row > summary .risk { grid-column: 6; }
+.ci-row > summary .cs { grid-column: 7; }
 .ci-row > summary .conf,
 .ci-row > summary .status,
 .ci-row > summary .risk,
