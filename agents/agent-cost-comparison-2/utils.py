@@ -60,48 +60,45 @@ def validate_result(workspace: Path, expected: dict):
     result_path = workspace / "output" / "result.json"
     summary_path = workspace / "output" / "summary.md"
 
-    checks = {
-        "result_created": result_path.exists(),
-        "summary_created": summary_path.exists(),
-    }
-
     actual = None
-
     if result_path.exists():
         try:
-            actual = json.loads(
+            loaded = json.loads(
                 result_path.read_text(encoding="utf-8")
             )
-
-            checks["valid_json"] = True
-
-            checks["region"] = (
-                str(actual.get("region", "")).lower()
-                == expected["region"]
-            )
-
-            checks["decline"] = (
-                actual.get("decline")
-                == expected["decline"]
-            )
-
-            checks["primary_product"] = (
-                str(actual.get("primary_product", "")).lower()
-                == expected["primary_product"]
-            )
-
+            if isinstance(loaded, dict):
+                actual = loaded
         except Exception:
-            checks["valid_json"] = False
-            checks["region"] = False
-            checks["decline"] = False
-            checks["primary_product"] = False
+            pass
 
-    else:
-        checks["valid_json"] = False
-        checks["region"] = False
-        checks["decline"] = False
-        checks["primary_product"] = False
+    expected_keys = set(expected.keys())
 
+    checks = {
+        "result_created": result_path.exists(),
+        "valid_json": actual is not None,
+        "keys_match_expected": (
+            actual is not None
+            and set(actual.keys()) == expected_keys
+        ),
+    }
+
+    for key in expected:
+        if actual is None or key not in actual:
+            checks[key] = False
+            continue
+
+        expected_value = expected[key]
+        actual_value = actual[key]
+
+        if isinstance(expected_value, str):
+            checks[key] = (
+                str(actual_value).lower()
+                == expected_value.lower()
+            )
+        else:
+            checks[key] = actual_value == expected_value
+
+    checks["summary_created"] = summary_path.exists()
     if summary_path.exists():
         summary = summary_path.read_text(
             encoding="utf-8"
@@ -110,14 +107,18 @@ def validate_result(workspace: Path, expected: dict):
     else:
         checks["summary_nonempty"] = False
 
-    correctness_checks = [
-        checks["region"],
-        checks["decline"],
-        checks["primary_product"],
-    ]
+    correctness_checks = [checks[key] for key in expected]
 
-    score = sum(correctness_checks) / len(correctness_checks)
-    success = all(correctness_checks)
+    score = (
+        sum(correctness_checks) / len(correctness_checks)
+        if correctness_checks
+        else 0.0
+    )
+    success = (
+        bool(correctness_checks)
+        and checks["keys_match_expected"]
+        and all(correctness_checks)
+    )
     all_checks_score = sum(checks.values()) / len(checks)
 
     return {

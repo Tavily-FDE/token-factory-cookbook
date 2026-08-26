@@ -7,7 +7,7 @@ correctness across models.
 
 ## Task
 
-The agent is given a workspace with sales/product data (`input/`) and must:
+The agent is given a workspace with sales/product data (`data-1/input/`) and must:
 
 1. Compare Q1 vs Q2 revenue by region.
 2. Find the region with the largest revenue decline and the dollar amount.
@@ -19,7 +19,7 @@ there's no code-execution tool available.
 
 ## Models compared
 
-Configured in `MODELS` in `agent_cost_comparison.py`:
+Configured in `MODELS` in `agent_cost_comparison_1.py`:
 
 - `nvidia/Nemotron-3-Ultra-550b-a55b`
 - `nvidia/nemotron-3-super-120b-a12b`
@@ -32,22 +32,22 @@ uv sync
 ```
 
 Set `NEBIUS_API_KEY` in a `.env` file (see `load_dotenv()` in
-`agent_cost_comparison.py`).
+`agent_cost_comparison_1.py`).
 
 ## Run
 
 ```bash
-uv run agent_cost_comparison.py
+uv run agent_cost_comparison_1.py
 ```
 
 Each model gets its own workspace under `benchmarks/<model>/` (input copied
-in, output written to `output/`), validated against `expected.json`. A final
+in, output written to `output/`), validated against `data-1/expected.json`. A final
 comparison table is printed across all models, sorted by cost ascending.
 
 ## Files
 
-- `agent_cost_comparison.py` — runs each model against the task and scores it.
+- `agent_cost_comparison_1.py` — runs each model against the task and scores it.
 - `utils.py` — workspace setup, usage/cost collection, validation, printing.
-- `input/` — source data copied into each model's workspace.
-- `expected.json` — ground-truth answer used for scoring.
+- `data-1/input/` — source data copied into each model's workspace.
+- `data-1/expected.json` — ground-truth answer used for scoring.
 - `benchmarks/` — per-model run artifacts (gitignored).

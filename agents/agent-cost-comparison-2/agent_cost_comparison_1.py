@@ -1,4 +1,5 @@
 
+import argparse
 import json
 import os
 import time
@@ -27,10 +28,19 @@ load_dotenv()
 # Configuration
 # ============================================================
 
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--data-dir",
+    default="data-1",
+    help="data suite directory under the script's parent (default: data-1)",
+)
+ARGS = parser.parse_args()
+
+DATA_SUITE_DIR = Path(__file__).parent / ARGS.data_dir
 BENCHMARK_ROOT = Path(__file__).parent / "benchmarks"
-INPUT_DATA_DIR = Path(__file__).parent / "input"
+INPUT_DATA_DIR = DATA_SUITE_DIR / "input"
 OUTPUT_DATA_DIR = "output"
-EXPECTED_PATH = Path(__file__).parent / "expected.json"
+EXPECTED_PATH = DATA_SUITE_DIR / "expected.json"
 
 NEBIUS_API_KEY = os.getenv("NEBIUS_API_KEY")
 
@@ -74,9 +84,11 @@ Your task is to:
 
 1. Inspect the available files.
 2. Compare Q1 and Q2 revenue by region.
-3. Determine which region had the largest revenue decline.
-4. Calculate the dollar amount of the decline.
-5. Determine which product contributed most to that decline.
+3. Determine which region had the largest revenue change by magnitude — \
+whether that change is an increase or a decrease.
+4. Calculate the dollar amount of that change (later period minus earlier \
+period: positive for an increase, negative for a decrease).
+5. Determine which product contributed most to that change in that region.
 6. Verify your calculations before producing the final answer.
 
 You have no shell or code-execution tool. Perform all comparisons and
@@ -91,17 +103,20 @@ result.json MUST have exactly this structure:
 
 {
   "region": "string",
-  "decline": number,
+  "change": number,
   "primary_product": "string"
 }
+
+"change" is the region's revenue change (later period minus earlier
+period): positive for an increase, negative for a decrease.
 
 summary.md MUST contain:
 
 # Sales Analysis
 
-- Region with largest decline
-- Dollar amount of decline
-- Product responsible for most of decline
+- Region with the largest revenue change
+- Dollar amount of that change (signed)
+- Product that contributed most to the change
 
 ## Executive Summary
 
@@ -269,6 +284,13 @@ def main():
         parents=True,
         exist_ok=True,
     )
+
+    print()
+    print("=" * 72)
+    print(f"Data suite: {ARGS.data_dir}")
+    print(f"  input:    {ARGS.data_dir}/input")
+    print(f"  expected: {ARGS.data_dir}/expected.json")
+    print("=" * 72)
 
     results = []
 
