@@ -1,5 +1,7 @@
 import json
 import shutil
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 
 
@@ -7,7 +9,7 @@ def create_workspace(
     run_dir: Path,
     model: str,
     input_data_dir: Path,
-    output_data_dir: str = "output",
+    output_data_dir: Path = Path("output"),
 ) -> Path:
     workspace = run_dir / model.replace("/", "__")
 
@@ -22,6 +24,11 @@ def create_workspace(
 
 
 def collect_usage(messages):
+    """Aggregate token usage and tool-call counts from a message list.
+
+    Note: 'turns' counts every message whose type is 'ai', so middleware or
+    reasoning messages in addition to end-user turns may inflate it.
+    """
     input_tokens = 0
     output_tokens = 0
     tool_calls = 0
@@ -61,6 +68,7 @@ def validate_result(workspace: Path, expected: dict):
     summary_path = workspace / "output" / "summary.md"
 
     actual = None
+    parse_error = None
     if result_path.exists():
         try:
             loaded = json.loads(
@@ -68,8 +76,13 @@ def validate_result(workspace: Path, expected: dict):
             )
             if isinstance(loaded, dict):
                 actual = loaded
-        except Exception:
-            pass
+            else:
+                parse_error = "result.json root is not a JSON object"
+        except Exception as exc:
+            parse_error = f"failed to parse result.json: {exc}"
+
+    if parse_error:
+        print(f"  [warn] {parse_error}")
 
     expected_keys = set(expected.keys())
 
@@ -80,6 +93,7 @@ def validate_result(workspace: Path, expected: dict):
             actual is not None
             and set(actual.keys()) == expected_keys
         ),
+        "result_parse_error": parse_error is None,
     }
 
     for key in expected:
@@ -92,8 +106,8 @@ def validate_result(workspace: Path, expected: dict):
 
         if isinstance(expected_value, str):
             checks[key] = (
-                str(actual_value).lower()
-                == expected_value.lower()
+                str(actual_value).strip().lower()
+                == expected_value.strip().lower()
             )
         else:
             checks[key] = actual_value == expected_value
@@ -246,3 +260,79 @@ def print_comparison(results):
 
     for row in rows:
         print(format_row(row))
+
+
+def _to_json_value(value):
+    """Convert an arbitrary value to a JSON-serializable representation."""
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_to_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _to_json_value(item) for key, item in value.items()}
+    if hasattr(value, "model_dump"):
+        return _to_json_value(value.model_dump())
+    if hasattr(value, "dict"):
+        return _to_json_value(value.dict())
+    return str(value)
+
+
+def serialize_message(message):
+    """Return a JSON-serializable representation of a LangChain message."""
+    entry = {
+        "type": getattr(message, "type", type(message).__name__),
+    }
+
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        entry["content"] = content
+    elif isinstance(content, list):
+        entry["content"] = _to_json_value(content)
+
+    calls = getattr(message, "tool_calls", None)
+    if calls:
+        entry["tool_calls"] = _to_json_value(calls)
+
+    if getattr(message, "type", None) == "tool":
+        entry["tool_call_id"] = getattr(message, "tool_call_id", None)
+
+    usage = getattr(message, "usage_metadata", None)
+    if usage:
+        entry["usage"] = _to_json_value(usage)
+
+    name = getattr(message, "name", None)
+    if name:
+        entry["name"] = name
+
+    return entry
+
+
+def dump_transcript(
+    response: dict,
+    workspace: Path,
+    output_dir: Path = Path("output"),
+) -> None:
+    """Write the agent message history to the workspace output directory."""
+    try:
+        messages = response.get("messages", [])
+        payload = [serialize_message(message) for message in messages]
+        path = workspace / output_dir / "_transcript.json"
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception as exc:
+        print(f"  [warn] failed to dump transcript: {exc}")
+
+
+def _invoke_with_timeout(agent, invocation_input, config, timeout):
+    """Run agent.invoke with a deadline."""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(agent.invoke, invocation_input, config)
+        return future.result(timeout=timeout)
+
+
+def _recover_messages(agent, run_config, error: str) -> tuple[dict, str]:
+    """Try to retrieve checkpointed messages after a failed/timed-out run."""
+    try:
+        state = agent.get_state(run_config)
+        return {"messages": list(state.values.get("messages", []))}, error
+    except Exception as recovery_exc:
+        return {"messages": []}, f"{error}\n[state recovery failed: {recovery_exc}]"

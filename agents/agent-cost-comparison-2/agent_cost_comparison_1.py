@@ -1,4 +1,3 @@
-
 import argparse
 import json
 import os
@@ -7,18 +6,21 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from deepagents import create_deep_agent
+from deepagents import HarnessProfile, create_deep_agent, register_harness_profile
 from deepagents.backends import FilesystemBackend
 from langchain_nebius import ChatNebius
 from langgraph.checkpoint.memory import InMemorySaver
 from utils import (
     collect_usage,
     create_workspace,
+    dump_transcript,
     print_comparison,
     print_metrics,
     print_summary,
     print_validation,
     validate_result,
+    _invoke_with_timeout,
+    _recover_messages,
 )
 
 load_dotenv()
@@ -28,28 +30,21 @@ load_dotenv()
 # Configuration
 # ============================================================
 
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--data-dir",
-    default="data-1",
-    help="data suite directory under the script's parent (default: data-1)",
-)
-ARGS = parser.parse_args()
-
-DATA_SUITE_DIR = Path(__file__).parent / ARGS.data_dir
-BENCHMARK_ROOT = Path(__file__).parent / "benchmarks"
-INPUT_DATA_DIR = DATA_SUITE_DIR / "input"
-OUTPUT_DATA_DIR = "output"
-EXPECTED_PATH = DATA_SUITE_DIR / "expected.json"
-
 NEBIUS_API_KEY = os.getenv("NEBIUS_API_KEY")
 
+BENCHMARK_ROOT = Path(__file__).parent / "benchmarks"
+OUTPUT_DATA_DIR = Path("output")
+AGENT_TIMEOUT = 300  # seconds (5 minutes)
+
+HARNESS_PROFILE_MODEL = "nebius:nvidia/Nemotron-3-Ultra-550b-a55b"
+
 TASK = (
-    "Inspect the input files in the workspace, then write the analysis results to "
-    "/output/result.json and /output/summary.md as described in your instructions."
+    "Analyze the workspace data and create the required output files."
 )
 
-EXPECTED = json.loads(EXPECTED_PATH.read_text(encoding="utf-8"))
+
+# NemotronPolicyNudgeMiddleware mistakes this single-turn file task for a task
+# transition. The runtime profile override below disables only that middleware.
 
 
 MODELS = [
@@ -57,49 +52,35 @@ MODELS = [
         "model_id": "nvidia/Nemotron-3-Ultra-550b-a55b",
         "input_price_per_1m": 1.00,
         "output_price_per_1m": 3.00,
+        "max_tokens": 16384,
     },
     {
         "model_id": "nvidia/nemotron-3-super-120b-a12b",
         "input_price_per_1m": 0.30,
         "output_price_per_1m": 0.90,
+        "max_tokens": 16384,
     },
     {
         "model_id": "nvidia/Nemotron-3_5-Lightning",
         "input_price_per_1m": 0.06,
         "output_price_per_1m": 0.24,
+        "max_tokens": 16384,
     },
-    # {
-    #     "model_id": "moonshotai/Kimi-K3",
-    #     "input_price_per_1m": 3.00,
-    #     "output_price_per_1m": 15.00,
-    # },
 ]
 
 SYSTEM_PROMPT = """
-You are a data analysis agent.
+Use only the workspace files to compare Q1 and Q2 revenue. Calculate each
+change as Q2 minus Q1, then identify:
 
-You have access to a workspace containing input files.
+1. The region with the largest absolute revenue change.
+2. That region's signed revenue change.
+3. Within that region, the product with the largest change in the same
+   direction as the region's change.
 
-Your task is to:
+Verify the calculations, then create both output files. Do not delete or
+rewrite them after creation.
 
-1. Inspect the available files.
-2. Compare Q1 and Q2 revenue by region.
-3. Determine which region had the largest revenue change by magnitude — \
-whether that change is an increase or a decrease.
-4. Calculate the dollar amount of that change (later period minus earlier \
-period: positive for an increase, negative for a decrease).
-5. Determine which product contributed most to that change in that region.
-6. Verify your calculations before producing the final answer.
-
-You have no shell or code-execution tool. Perform all comparisons and
-arithmetic yourself by reasoning over the file contents you read.
-
-You MUST create:
-
-/output/result.json
-/output/summary.md
-
-result.json MUST have exactly this structure:
+/output/result.json must contain exactly:
 
 {
   "region": "string",
@@ -107,23 +88,18 @@ result.json MUST have exactly this structure:
   "primary_product": "string"
 }
 
-"change" is the region's revenue change (later period minus earlier
-period): positive for an increase, negative for a decrease.
-
-summary.md MUST contain:
+/output/summary.md must contain exactly this heading and three bullets. Each
+bullet must include the actual computed value from result.json after the colon:
 
 # Sales Analysis
 
-- Region with the largest revenue change
-- Dollar amount of that change (signed)
-- Product that contributed most to the change
+- Region with the largest revenue change: <actual region>
+- Dollar amount of that change (signed): <actual signed change>
+- Product that contributed most to the change: <actual product>
 
-## Executive Summary
-
-Then provide exactly three concise bullet points.
-
-Do not guess.
-Base your answer only on the files in the workspace.
+Replace every angle-bracketed placeholder with the real value. Label-only
+bullets, placeholders, and copied instructions are invalid. Read summary.md
+after writing it and confirm that all three actual values are present.
 """
 
 
@@ -131,7 +107,13 @@ Base your answer only on the files in the workspace.
 # Run one model
 # ============================================================
 
-def run_model(model_config):
+def run_model(
+    model_config: dict,
+    data_dir: Path,
+    expected: dict,
+    dump_transcript_flag: bool,
+) -> dict:
+    """Run a single model against the benchmark and return scored metrics."""
     name = model_config["model_id"]
 
     print()
@@ -140,9 +122,9 @@ def run_model(model_config):
     print("=" * 72)
 
     workspace = create_workspace(
-        run_dir=BENCHMARK_ROOT,
+        run_dir=BENCHMARK_ROOT / data_dir.name,
         model=name,
-        input_data_dir=INPUT_DATA_DIR,
+        input_data_dir=data_dir / "input",
         output_data_dir=OUTPUT_DATA_DIR,
     )
 
@@ -154,6 +136,7 @@ def run_model(model_config):
         model=model_config["model_id"],
         api_key=NEBIUS_API_KEY,
         temperature=0,
+        max_tokens=model_config["max_tokens"],
     )
 
     # --------------------------------------------------------
@@ -189,8 +172,8 @@ def run_model(model_config):
     start = time.perf_counter()
 
     try:
-
-        response = agent.invoke(
+        response = _invoke_with_timeout(
+            agent,
             {
                 "messages": [
                     {
@@ -199,24 +182,34 @@ def run_model(model_config):
                     }
                 ]
             },
-            config=run_config,
+            run_config,
+            AGENT_TIMEOUT,
         )
-
         error = None
 
-    except Exception as exc:
+    except TimeoutError:
+        # The run hit the deadline. Some steps may still have been checkpointed
+        # before the cutoff, so try to recover them for accurate token/cost
+        # reporting.
+        response, error = _recover_messages(
+            agent,
+            run_config,
+            f"agent.invoke timed out after {AGENT_TIMEOUT}s",
+        )
 
+    except (KeyboardInterrupt, SystemExit):
+        # Let the process exit cleanly on user/external signals.
+        raise
+
+    except Exception as exc:
         # Recover whatever messages were checkpointed before the crash, so
         # tokens/cost already billed for this run aren't reported as zero.
-        state = agent.get_state(run_config)
-
-        response = {
-            "messages": state.values.get("messages", [])
-        }
-
-        error = str(exc)
+        response, error = _recover_messages(agent, run_config, str(exc))
 
     elapsed = time.perf_counter() - start
+
+    if dump_transcript_flag:
+        dump_transcript(response, workspace, OUTPUT_DATA_DIR)
 
     # --------------------------------------------------------
     # Metrics
@@ -226,7 +219,7 @@ def run_model(model_config):
         response.get("messages", [])
     )
 
-    validation = validate_result(workspace, EXPECTED)
+    validation = validate_result(workspace, expected)
 
     input_cost = (
         usage["input_tokens"]
@@ -279,6 +272,35 @@ def run_model(model_config):
 # ============================================================
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data-dir",
+        default="data-1",
+        help="data suite directory under the script's parent (default: data-1)",
+    )
+    parser.add_argument(
+        "--dump-transcript",
+        action="store_true",
+        help="write the message transcript to <workspace>/output/_transcript.json",
+    )
+    args = parser.parse_args()
+
+    if not NEBIUS_API_KEY:
+        parser.error("NEBIUS_API_KEY environment variable is not set")
+
+    # Register the Nemotron-3-Ultra harness profile override at runtime rather
+    # than at import time, so importing the module does not mutate global state.
+    register_harness_profile(
+        HARNESS_PROFILE_MODEL,
+        HarnessProfile(
+            excluded_middleware={"NemotronPolicyNudgeMiddleware"},
+        ),
+    )
+
+    data_suite_dir = Path(__file__).parent / args.data_dir
+    expected_path = data_suite_dir / "expected.json"
+
+    expected = json.loads(expected_path.read_text(encoding="utf-8"))
 
     BENCHMARK_ROOT.mkdir(
         parents=True,
@@ -287,19 +309,20 @@ def main():
 
     print()
     print("=" * 72)
-    print(f"Data suite: {ARGS.data_dir}")
-    print(f"  input:    {ARGS.data_dir}/input")
-    print(f"  expected: {ARGS.data_dir}/expected.json")
+    print(f"Data suite: {args.data_dir}")
+    print(f"  input:    {args.data_dir}/input")
+    print(f"  expected: {args.data_dir}/expected.json")
     print("=" * 72)
 
     results = []
 
     for model_config in MODELS:
-
         result = run_model(
-            model_config
+            model_config,
+            data_dir=data_suite_dir,
+            expected=expected,
+            dump_transcript_flag=args.dump_transcript,
         )
-
         results.append(result)
 
         print_validation(result)
