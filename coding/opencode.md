@@ -19,7 +19,7 @@ Easiest.
 
 [🎥 howto video](https://www.youtube.com/watch?v=216_T--JE0k)
 
-## Option 2: Also add a custom provider
+## Option 2: Add a custom provider
 
 This is a handy option for newer models that don't appear in the catalog.
 
